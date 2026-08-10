@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=./policy.schema.json
 # check-commit policy for the `occurrence` package prefix.
 #
 # Policy is per-prefix: the same packagePrefix that scopes the deployed
@@ -7,6 +8,12 @@
 # folders actually follow, with citations per item. Protocol-level forms
 # (anaimail file naming, issue paths, quilt+s3 URI syntax) live in the
 # engine; this file holds only what is specific to one prefix.
+
+# The checker's identity for this prefix: registry identity (global, goes in
+# revision metadata) and cast label (package-scoped, goes in message filenames
+# and From: headers). Registered in spec:protocol/author_registry.yaml.
+author: commit-protocol
+cast_label: CP
 
 # Size watchlist, per the package README.
 watchlist:

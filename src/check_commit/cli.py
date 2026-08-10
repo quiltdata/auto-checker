@@ -78,6 +78,53 @@ def _print_report(report):
         print(f"  note: {n}")
 
 
+def cmd_compose(args) -> int:
+    """Preview the anaimail message a revision's findings would produce. No writes."""
+    from .compose import ComposeError, compose
+
+    m = URI_RE.match(args.uri)
+    if not m:
+        print(f"error: not a quilt+s3 package URI: {args.uri}", file=sys.stderr)
+        return 2
+    bucket, package, want = m.group("bucket"), m.group("pkg"), m.group("hash")
+
+    history = _history(args, package, bucket)
+    pairs = history.revisions()
+    index = len(pairs) - 1
+    if want and want != "latest":
+        matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
+        if len(matches) != 1:
+            print(f"error: revision {want!r} not found (or ambiguous)", file=sys.stderr)
+            return 2
+        index = matches[0]
+
+    cur = history.view(pairs[index][1], pointer=pairs[index][0])
+    prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
+
+    try:
+        pol = Policy.for_package(package, override=args.policy)
+    except PolicyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    ctx = Context(history, pairs, online=not args.offline, policy=pol)
+    report = run(prev, cur, ctx)
+    if report.error:
+        print(report.error, file=sys.stderr)
+        return 2
+    if not report.findings:
+        print(f"verdict: PASS — no message would be written for {report.tophash[:12]}")
+        return 0
+
+    try:
+        msg = compose(report, cur, prev, pol)
+    except ComposeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"--- would write: {msg.logical_key}\n")
+    print(msg.text)
+    return report.exit_code
+
+
 def cmd_backtest(args) -> int:
     import yaml
 
@@ -187,6 +234,15 @@ def main(argv=None) -> int:
     p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
     p.set_defaults(fn=cmd_check)
+
+    p = sub.add_parser(
+        "compose", help="preview the anaimail message a revision's findings would produce (no writes)"
+    )
+    p.add_argument("uri", help="quilt+s3://<bucket>#package=<name>[@tophash]")
+    p.add_argument("--offline", action="store_true", help="skip foreign-package URI resolution")
+    p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
+    p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
+    p.set_defaults(fn=cmd_compose)
 
     p = sub.add_parser("backtest", help="replay the acceptance corpus against expectations")
     p.add_argument(

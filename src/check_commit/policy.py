@@ -36,6 +36,8 @@ class Policy:
     """Per-prefix tunables. See policies/<prefix>.yaml for provenance."""
 
     prefix: str
+    author: str  # registry identity (global; revision metadata)
+    cast_label: str  # package-scoped label (filenames, From: headers)
     watchlist: list[re.Pattern]
     decrease_markers: tuple[str, ...]
     structured_file_fields: dict[str, str]  # field -> added|removed|changed|any
@@ -56,6 +58,8 @@ class Policy:
             raise PolicyError(f"policy file not found: {path}")
         return cls(
             prefix=prefix or path.stem,
+            author=raw.get("author", ""),
+            cast_label=raw.get("cast_label", ""),
             watchlist=[re.compile(p) for p in raw.get("watchlist", [])],
             decrease_markers=tuple(raw.get("decrease_markers", [])),
             structured_file_fields=dict(raw.get("structured_file_fields", {})),

@@ -11,7 +11,11 @@ dependencies = [
     "quilt3>=6.0",
     "boto3>=1.28",
     "PyYAML>=6.0",
+    "Jinja2>=3.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 check-commit = "check_commit.cli:main"
