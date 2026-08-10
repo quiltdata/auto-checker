@@ -8,16 +8,24 @@ from . import __version__
 from .checks import ALL_CHECKS
 from .corpus import PackageHistory
 from .model import Report, RevisionView
+from .policy import Policy
 
 
 class Context:
     """What checks may reach beyond the two revision views."""
 
-    def __init__(self, history: PackageHistory, revision_pairs, online: bool):
+    def __init__(
+        self,
+        history: PackageHistory,
+        revision_pairs,
+        online: bool,
+        policy: Policy | None = None,
+    ):
         self.history = history
         self.bucket = history.bucket
         self.package = history.package
         self.online = online
+        self.policy = policy or Policy.for_package(history.package)
         self._pairs = list(revision_pairs)
         self._tophashes = [t for _, t in self._pairs]
         self._foreign_cache: dict = {}

@@ -1,0 +1,57 @@
+# checkpass policy for the `occurrence` package prefix.
+#
+# Policy is per-prefix: the same packagePrefix that scopes the deployed
+# stack's event filter selects this file, so every occurrence/* package is
+# governed by one policy. Everything here is derived from the governed
+# packages' own record — READMEs, closed issues, and the conventions their
+# folders actually follow, with citations per item. Protocol-level forms
+# (anaimail file naming, issue paths, quilt+s3 URI syntax) live in the
+# engine; this file holds only what is specific to one prefix.
+
+# Size watchlist, per the package README.
+watchlist:
+  - "^01-backstory/(0[1-9]|10)P-"
+  - "^01-backstory/01-backstory-summary\\.md$"
+  - "^02-measure-selection/02-results-summary\\.md$"
+  - "^03-conditional-kernel/03\\.01P-"
+
+# A size decrease on a watchlisted artifact counts as declared only if a
+# sentence of the delta/message names the file AND contains one of these stems.
+decrease_markers:
+  - compress
+  - shrink
+  - trim
+  - condens
+  - shorten
+  - reduc
+  - truncat
+  - prune
+  - strik
+
+# Revision user_meta fields whose values name files the patch claims to touch,
+# and which part of the actual diff each claim must land in.
+structured_file_fields:
+  adds: added
+  messages_added: added
+  deletes: removed
+  changes: changed
+  renames: any
+  updates: any
+
+# 01-backstory predates the PARENT.NNL rule and is recorded in the package
+# README as a deviation that is not retrofitted (revision f6c34d02); bare NNL
+# is accepted there and only there.
+grandfathered_bare_folders:
+  - 01-backstory
+
+# Counter collisions adjudicated by the package as a known-unresolved spec
+# condition rather than a defect: both pairs were written against the same
+# head and neither party is recorded as at fault.
+adjudicated_collisions:
+  - folder: 02-measure-selection
+    counter: "21"
+    letters: [K, P]
+  - folder: 03-conditional-kernel
+    counter: "05"
+    letters: [M, P]
+adjudication_cite: issues/closed/030

@@ -16,6 +16,7 @@ from . import __version__
 from .corpus import PackageHistory
 from .engine import Context, run
 from .model import DEFECT, KNOWN_UNRESOLVED
+from .policy import Policy, PolicyError
 
 URI_RE = re.compile(r"^quilt\+s3://(?P<bucket>[^#]+)#package=(?P<pkg>[^@&]+)(?:@(?P<hash>[^&]+))?")
 
@@ -48,7 +49,12 @@ def cmd_check(args) -> int:
     cur = history.view(pairs[index][1], pointer=pairs[index][0])
     prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
 
-    ctx = Context(history, pairs, online=not args.offline)
+    try:
+        pol = Policy.for_package(package, override=args.policy)
+    except PolicyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    ctx = Context(history, pairs, online=not args.offline, policy=pol)
     report = run(prev, cur, ctx)
 
     if args.json:
@@ -90,7 +96,12 @@ def cmd_backtest(args) -> int:
     pairs = pairs[: upto[0] + 1]
     print(f"backtest: {package}, {len(pairs)} revisions up to pin {pin[:12]}")
 
-    ctx = Context(history, pairs, online=args.online)
+    try:
+        pol = Policy.for_package(package, override=args.policy)
+    except PolicyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    ctx = Context(history, pairs, online=args.online, policy=pol)
     by_hash: dict[str, list] = {}
     counts = collections.Counter()
     prev = None
@@ -174,6 +185,7 @@ def main(argv=None) -> int:
     p.add_argument("--offline", action="store_true", help="skip foreign-package URI resolution")
     p.add_argument("--json", action="store_true", help="emit the JSON report")
     p.add_argument("--cache", help="cache directory (default ~/.cache/checkpass)")
+    p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
     p.set_defaults(fn=cmd_check)
 
     p = sub.add_parser("backtest", help="replay the acceptance corpus against expectations")
@@ -184,6 +196,7 @@ def main(argv=None) -> int:
     p.add_argument("--online", action="store_true", help="also resolve foreign-package URIs")
     p.add_argument("--report", help="write full findings JSON to this path")
     p.add_argument("--cache", help="cache directory (default ~/.cache/checkpass)")
+    p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
     p.set_defaults(fn=cmd_backtest)
 
     args = parser.parse_args(argv)

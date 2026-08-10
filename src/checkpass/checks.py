@@ -99,7 +99,7 @@ def check_delta_set(prev, cur, ctx) -> list[Finding]:
     # (a) every actually-touched file must be named by the revision
     blob = " ".join(
         [delta_text, cur.message or ""]
-        + [json.dumps(meta.get(f)) for f in policy.STRUCTURED_FILE_FIELDS if meta.get(f)]
+        + [json.dumps(meta.get(f)) for f in ctx.policy.structured_file_fields if meta.get(f)]
     )
     for path in all_actual:
         if not _mentioned(path, blob):
@@ -115,13 +115,12 @@ def check_delta_set(prev, cur, ctx) -> list[Finding]:
             )
 
     # (b) fresh structured claims must have been performed
-    for field in policy.STRUCTURED_FILE_FIELDS:
+    for field, target in ctx.policy.structured_file_fields.items():
         value = meta.get(field)
         if not value or value == prev_meta.get(field):
             # absent, or inherited verbatim from the prior revision: stale
             # metadata is metadata-hygiene's finding, not a fresh claim
             continue
-        target = policy.FIELD_TO_DIFF.get(field, "any")
         pool = all_actual if target == "any" else actual[target]
         for claimed in _extract_paths(value):
             if not _matches_actual(claimed, pool) and not _matches_actual(claimed, all_actual):
@@ -160,13 +159,11 @@ def check_delta_set(prev, cur, ctx) -> list[Finding]:
 # check 2 — no undeclared size decrease on a watchlisted artifact
 # --------------------------------------------------------------------------
 
-def _decrease_declared(path: str, text: str) -> bool:
+def _decrease_declared(path: str, text: str, markers) -> bool:
     """A shrink is declared only if a sentence names the file AND a reduction."""
     tokens = {t.lower() for t in _mention_tokens(path)}
     for sentence in re.split(r"(?<=[.;])\s+|\n", text.lower()):
-        if any(t in sentence for t in tokens) and any(
-            m in sentence for m in policy.DECREASE_MARKERS
-        ):
+        if any(t in sentence for t in tokens) and any(m in sentence for m in markers):
             return True
     return False
 
@@ -177,12 +174,13 @@ def check_watchlist(prev, cur, ctx) -> list[Finding]:
     findings = []
     _, removed, changed = cur.diff(prev)
     text = (_meta_text(cur.meta or {})) + " " + (cur.message or "")
+    markers = ctx.policy.decrease_markers
 
     for path in changed:
-        if not policy.is_watchlisted(path):
+        if not ctx.policy.is_watchlisted(path):
             continue
         old, new = prev.entries[path].size or 0, cur.entries[path].size or 0
-        if new < old and not _decrease_declared(path, text):
+        if new < old and not _decrease_declared(path, text, markers):
             findings.append(
                 Finding(
                     check="watchlist-size",
@@ -195,14 +193,14 @@ def check_watchlist(prev, cur, ctx) -> list[Finding]:
             )
     added, _, _ = cur.diff(prev)
     for path in removed:
-        if not policy.is_watchlisted(path):
+        if not ctx.policy.is_watchlisted(path):
             continue
         # a removal paired with an addition of the same message id is a
         # replacement/renumber, not a loss (e.g. provisional 08P -> final 08P)
         rid = posixpath.basename(path).split("-", 1)[0]
         if any(posixpath.basename(a).split("-", 1)[0] == rid for a in added):
             continue
-        if not _decrease_declared(path, text):
+        if not _decrease_declared(path, text, markers):
             findings.append(
                 Finding(
                     check="watchlist-size",
@@ -254,7 +252,7 @@ def check_filenames(prev, cur, ctx) -> list[Finding]:
             for p in prev.entries
             if p.rpartition("/")[0] == folder
         )
-        if parent is None and folder_is_dotted and folder not in policy.GRANDFATHERED_BARE_FOLDERS:
+        if parent is None and folder_is_dotted and folder not in ctx.policy.grandfathered_bare_folders:
             findings.append(
                 Finding(
                     check="filename-form",
@@ -285,7 +283,7 @@ def check_filenames(prev, cur, ctx) -> list[Finding]:
             if oparts is None or oparts[0] != counter:
                 continue
             pair_letters = {letters, oparts[1]}
-            allowed = policy.ADJUDICATED_COLLISIONS.get((folder, counter))
+            allowed = ctx.policy.adjudicated_collisions.get((folder, counter))
             if allowed and pair_letters <= allowed:
                 findings.append(
                     Finding(
@@ -294,7 +292,7 @@ def check_filenames(prev, cur, ctx) -> list[Finding]:
                         kind="adjudicated-collision",
                         paths=(path, other),
                         detail=f"counter {counter} shared in {folder}; recorded as a "
-                        f"known-unresolved spec condition ({policy.ADJUDICATION_CITE}), "
+                        f"known-unresolved spec condition ({ctx.policy.adjudication_cite}), "
                         f"not a defect",
                     )
                 )
@@ -469,7 +467,7 @@ def check_metadata(prev, cur, ctx) -> list[Finding]:
     all_actual = sorted(set(added) | set(removed) | set(changed))
     prev_meta, meta = prev.meta or {}, cur.meta or {}
 
-    for field in policy.STRUCTURED_FILE_FIELDS + ("delta",):
+    for field in tuple(ctx.policy.structured_file_fields) + ("delta",):
         value = meta.get(field)
         if not value or value != prev_meta.get(field):
             continue

@@ -1,87 +1,80 @@
-"""Package-specific policy for occurrence/probability.
+"""Policy: protocol-level forms in code, per-prefix tunables from YAML.
 
-Everything here is derived from the governed package's own record — its README,
-its closed issues, and the conventions its folders actually follow. Citations
-are given per item so a reader can audit the policy against the package.
+The protocol forms (anaimail file naming, issue paths, quilt+s3 URI syntax)
+are properties of the spec, not of any one package — they live here. The
+per-prefix tunables (watchlist, adjudicated collisions, grandfathered
+folders, metadata field conventions) load from `policies/<prefix>.yaml`,
+selected by the same package prefix that scopes the deployed stack.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import pathlib
 import re
 
-# --- check 2: size watchlist -------------------------------------------------
-# Per the package README: 01-backstory/01P–10P and 01-backstory-summary.md,
-# 02-measure-selection/02-results-summary.md, 03-conditional-kernel/03.01P.
-WATCHLIST_PATTERNS = [
-    re.compile(r"^01-backstory/(0[1-9]|10)P-"),
-    re.compile(r"^01-backstory/01-backstory-summary\.md$"),
-    re.compile(r"^02-measure-selection/02-results-summary\.md$"),
-    re.compile(r"^03-conditional-kernel/03\.01P-"),
-]
+# --- protocol-level forms (spec:protocol/anaimail.md; issue-tracker layout) ---
 
-# A size decrease on a watchlisted artifact counts as declared only if the
-# revision's delta/message acknowledges a reduction in one of these stems.
-DECREASE_MARKERS = (
-    "compress",
-    "shrink",
-    "trim",
-    "condens",
-    "shorten",
-    "reduc",
-    "truncat",
-    "prune",
-    "strik",
-)
-
-
-def is_watchlisted(path: str) -> bool:
-    return any(p.search(path) for p in WATCHLIST_PATTERNS)
-
-
-# --- check 1 / check 6: structured metadata fields ---------------------------
-# Revision user_meta fields whose values name files the patch claims to touch.
-STRUCTURED_FILE_FIELDS = (
-    "adds",
-    "deletes",
-    "changes",
-    "messages_added",
-    "renames",
-    "updates",
-)
-
-# Which part of the actual diff each structured claim must land in.
-FIELD_TO_DIFF = {
-    "adds": "added",
-    "messages_added": "added",
-    "deletes": "removed",
-    "changes": "changed",
-    "renames": "any",
-    "updates": "any",
-}
-
-# --- check 3: message-file naming --------------------------------------------
-# Message folders are NN-slug at the package root. Inside them, the anaimail
-# Structure §3 form is PARENT.NNL-title-slug.md. 01-backstory predates the rule
-# and is recorded in the package README as a deviation that is not retrofitted
-# (revision f6c34d02); bare NNL is accepted there and only there.
 MESSAGE_FOLDER_RE = re.compile(r"^(\d{2})-[\w-]+$")
-GRANDFATHERED_BARE_FOLDERS = {"01-backstory"}
-
 DOTTED_MESSAGE_RE = re.compile(r"^(\d{2})\.(\d{2})([A-Z]{1,2})-.+\.md$")
 BARE_MESSAGE_RE = re.compile(r"^(\d{2})([A-Z]{1,2})-.+\.md$")
 
-# Counter collisions adjudicated by the package as a known-unresolved spec
-# condition rather than a defect: both pairs were written against the same
-# head and neither party is recorded as at fault (issues/closed/030).
-ADJUDICATED_COLLISIONS = {
-    ("02-measure-selection", "21"): frozenset({"K", "P"}),
-    ("03-conditional-kernel", "05"): frozenset({"M", "P"}),
-}
-ADJUDICATION_CITE = "issues/closed/030"
-
-# --- check 4: issue paths -----------------------------------------------------
 OPEN_ISSUE_RE = re.compile(r"^issues/(\d{3})-[^/]+$")
 CLOSED_ISSUE_RE = re.compile(r"^issues/closed/(\d{3})-[^/]+$")
 
-# --- check 5: quilt+s3 URIs ----------------------------------------------------
 QUILT_URI_RE = re.compile(r"quilt\+s3://[^\s\)\]\"'`<>]+")
+
+POLICY_DIR = pathlib.Path(__file__).parent / "policies"
+
+
+class PolicyError(Exception):
+    pass
+
+
+@dataclasses.dataclass
+class Policy:
+    """Per-prefix tunables. See policies/<prefix>.yaml for provenance."""
+
+    prefix: str
+    watchlist: list[re.Pattern]
+    decrease_markers: tuple[str, ...]
+    structured_file_fields: dict[str, str]  # field -> added|removed|changed|any
+    grandfathered_bare_folders: set[str]
+    adjudicated_collisions: dict[tuple[str, str], frozenset[str]]
+    adjudication_cite: str
+
+    def is_watchlisted(self, path: str) -> bool:
+        return any(p.search(path) for p in self.watchlist)
+
+    @classmethod
+    def load(cls, path: pathlib.Path, prefix: str = "") -> "Policy":
+        import yaml
+
+        try:
+            raw = yaml.safe_load(path.read_text())
+        except FileNotFoundError:
+            raise PolicyError(f"policy file not found: {path}")
+        return cls(
+            prefix=prefix or path.stem,
+            watchlist=[re.compile(p) for p in raw.get("watchlist", [])],
+            decrease_markers=tuple(raw.get("decrease_markers", [])),
+            structured_file_fields=dict(raw.get("structured_file_fields", {})),
+            grandfathered_bare_folders=set(raw.get("grandfathered_bare_folders", [])),
+            adjudicated_collisions={
+                (c["folder"], str(c["counter"])): frozenset(str(x) for x in c["letters"])
+                for c in raw.get("adjudicated_collisions", [])
+            },
+            adjudication_cite=raw.get("adjudication_cite", ""),
+        )
+
+    @classmethod
+    def for_package(cls, package: str, override: str | None = None) -> "Policy":
+        """Resolve policy from the package's prefix, or an explicit path.
+
+        A package with no policy is an engine error, not a silent pass — a
+        checker that cannot know what to check must say so (exit 2).
+        """
+        if override:
+            return cls.load(pathlib.Path(override))
+        prefix = package.split("/", 1)[0]
+        return cls.load(POLICY_DIR / f"{prefix}.yaml", prefix=prefix)

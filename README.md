@@ -45,6 +45,17 @@ Exit codes: `0` pass (known-unresolved findings permitted and reported),
 Severities: `defect`, `known-unresolved` (e.g. the counter collisions adjudicated
 by `issues/closed/030` — reported, never silently passed, never a defect).
 
+## Policy
+
+Protocol-level forms (anaimail file naming, issue paths, URI syntax) live in the
+engine. Everything specific to a governed corpus — watchlist, adjudicated
+collisions, grandfathered folders, metadata field conventions — is **per-prefix
+policy**, auto-selected from the package's prefix: `occurrence/probability`
+loads [`src/checkpass/policies/occurrence.yaml`](src/checkpass/policies/occurrence.yaml).
+The deployed stack's `packagePrefix` input selects the event filter and the
+policy with the same value. A package whose prefix has no policy is an engine
+error (exit 2), never a silent pass. Override with `--policy <file>`.
+
 ## Backtest — the acceptance gate
 
 ```bash
