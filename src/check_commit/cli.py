@@ -1,4 +1,4 @@
-"""checkpass CLI: `check` one revision, or `backtest` the acceptance corpus."""
+"""check-commit CLI: `check` one revision, or `backtest` the acceptance corpus."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def cmd_check(args) -> int:
 
 
 def _print_report(report):
-    print(f"checkpass {report.engine_version} — {report.package} @ {report.tophash[:12]}")
+    print(f"check-commit {report.engine_version} — {report.package} @ {report.tophash[:12]}")
     print(f"  vs prev {report.prev_tophash[:12] if report.prev_tophash else '(none)'}")
     print(f"  verdict: {report.verdict.upper()}")
     if report.error:
@@ -176,7 +176,7 @@ def cmd_backtest(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="checkpass", description=__doc__)
+    parser = argparse.ArgumentParser(prog="check-commit", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -184,7 +184,7 @@ def main(argv=None) -> int:
     p.add_argument("uri", help="quilt+s3://<bucket>#package=<name>[@tophash]")
     p.add_argument("--offline", action="store_true", help="skip foreign-package URI resolution")
     p.add_argument("--json", action="store_true", help="emit the JSON report")
-    p.add_argument("--cache", help="cache directory (default ~/.cache/checkpass)")
+    p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
     p.set_defaults(fn=cmd_check)
 
@@ -195,7 +195,7 @@ def main(argv=None) -> int:
     )
     p.add_argument("--online", action="store_true", help="also resolve foreign-package URIs")
     p.add_argument("--report", help="write full findings JSON to this path")
-    p.add_argument("--cache", help="cache directory (default ~/.cache/checkpass)")
+    p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
     p.set_defaults(fn=cmd_backtest)
 

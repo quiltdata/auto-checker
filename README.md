@@ -1,8 +1,8 @@
 # auto-checker
 
-Auto-checker for governed Quilt packages — deterministic T0 `checkpass` (proj/260810-auto-checker).
+Auto-checker for governed Quilt packages — deterministic T0 `check-commit` (proj/260810-auto-checker).
 
-`checkpass` runs six manifest-level checks on one revision of a governed package
+`check-commit` runs six manifest-level checks on one revision of a governed package
 against its predecessor. No model, no inference: two revisions in, findings out,
 verdict gated on accumulated check state. Spec: `proj/260810-auto-checker`
 `04-mvp-tier-0-design.md` §4 (build spec `03` §1).
@@ -19,13 +19,13 @@ Requires AWS credentials with read access to the registry bucket. Nothing else.
 
 ```bash
 # check the head revision of a package
-checkpass check "quilt+s3://quilt-ernest-staging#package=occurrence/probability"
+check-commit check "quilt+s3://quilt-ernest-staging#package=occurrence/probability"
 
 # check a specific revision (any unique tophash prefix)
-checkpass check "quilt+s3://quilt-ernest-staging#package=occurrence/probability@7d74cc22"
+check-commit check "quilt+s3://quilt-ernest-staging#package=occurrence/probability@7d74cc22"
 
 # machine-readable report
-checkpass check "quilt+s3://..." --json
+check-commit check "quilt+s3://..." --json
 ```
 
 Exit codes: `0` pass (known-unresolved findings permitted and reported),
@@ -51,7 +51,7 @@ Protocol-level forms (anaimail file naming, issue paths, URI syntax) live in the
 engine. Everything specific to a governed corpus — watchlist, adjudicated
 collisions, grandfathered folders, metadata field conventions — is **per-prefix
 policy**, auto-selected from the package's prefix: `occurrence/probability`
-loads [`src/checkpass/policies/occurrence.yaml`](src/checkpass/policies/occurrence.yaml).
+loads [`src/check_commit/policies/occurrence.yaml`](src/check_commit/policies/occurrence.yaml).
 The deployed stack's `packagePrefix` input selects the event filter and the
 policy with the same value. A package whose prefix has no policy is an engine
 error (exit 2), never a silent pass. Override with `--policy <file>`.
@@ -59,7 +59,7 @@ error (exit 2), never a silent pass. Override with `--policy <file>`.
 ## Backtest — the acceptance gate
 
 ```bash
-checkpass backtest
+check-commit backtest
 ```
 
 Replays every revision of `occurrence/probability` up to the pinned audit head
@@ -70,7 +70,7 @@ cites a fix revision as evidence, the expectations file maps it to the
 defective revision it documents.
 
 The first run fetches revision views and changed-document contents into
-`~/.cache/checkpass` (override with `--cache` or `CHECKPASS_CACHE`);
+`~/.cache/check-commit` (override with `--cache` or `CHECK_COMMIT_CACHE`);
 subsequent runs are fast and offline for everything but the revision listing.
 
 Per `04` §8, nothing deploys unless the backtest passes.

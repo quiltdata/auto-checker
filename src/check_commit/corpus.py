@@ -16,7 +16,7 @@ from typing import Iterable
 from .model import Entry, RevisionView
 
 DEFAULT_CACHE = pathlib.Path(
-    os.environ.get("CHECKPASS_CACHE", pathlib.Path.home() / ".cache" / "checkpass")
+    os.environ.get("CHECK_COMMIT_CACHE", pathlib.Path.home() / ".cache" / "check-commit")
 )
 
 

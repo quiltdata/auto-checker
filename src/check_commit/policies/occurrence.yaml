@@ -1,4 +1,4 @@
-# checkpass policy for the `occurrence` package prefix.
+# check-commit policy for the `occurrence` package prefix.
 #
 # Policy is per-prefix: the same packagePrefix that scopes the deployed
 # stack's event filter selects this file, so every occurrence/* package is

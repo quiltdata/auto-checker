@@ -1,4 +1,4 @@
-# Acceptance corpus for checkpass (03 §1; 04 §4/§8).
+# Acceptance corpus for check-commit (03 §1; 04 §4/§8).
 #
 # The pin is the head at audit time. Revisions after it exist but are not part
 # of acceptance. Hash keys are unique prefixes of revision top hashes.

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "checkpass"
+name = "check-commit"
 version = "0.1.0"
 description = "Deterministic tier-0 checker for governed Quilt packages"
 requires-python = ">=3.10"
@@ -14,10 +14,10 @@ dependencies = [
 ]
 
 [project.scripts]
-checkpass = "checkpass.cli:main"
+check-commit = "check_commit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-checkpass = ["policies/*.yaml"]
+check_commit = ["policies/*.yaml"]

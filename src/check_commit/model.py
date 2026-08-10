@@ -92,7 +92,7 @@ class Report:
 
     def to_dict(self):
         return {
-            "schema": "checkpass-report/0",
+            "schema": "check-commit-report/0",
             "engine_version": self.engine_version,
             "package": self.package,
             "registry": self.registry,
