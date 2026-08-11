@@ -24,4 +24,4 @@ check-commit = "check_commit.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-check_commit = ["policies/*.yaml"]
+check_commit = ["policies/*.yaml", "policies/*.md", "policies/*.json"]

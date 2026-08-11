@@ -11,12 +11,15 @@ from conftest import rev
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, existing_keys=()):
         self.calls = []
+        self.existing_keys = set(existing_keys)
 
     def __getattr__(self, name):
         def record(**kwargs):
             self.calls.append((name, kwargs))
+            if name == "head_object" and kwargs.get("Key") not in self.existing_keys:
+                raise KeyError("404")  # stands in for botocore ClientError
             return {}
 
         return record
@@ -154,6 +157,20 @@ def test_stale_event_for_superseded_revision_never_writes(monkeypatch):
     assert "stale event" in out.detail
     assert any(c[0] == "publish" for c in h.sns.calls)  # still notified
     assert not h.s3.calls and not h.sqs.calls  # never writes
+
+
+def test_idempotent_skip_when_response_staged_in_s3(wired):
+    """Redelivery before the Packager has cut the response revision: the
+    message file already sits in S3, so nothing is re-put or re-requested."""
+    h, views = wired
+    make_defective(views)
+    h.s3 = FakeClient(
+        existing_keys={f"occurrence/testpkg/02-measure-selection/02.03CP-t0-check-of-{'b' * 8}.md"}
+    )
+    out = h.handle_detail(detail("b" * 64))
+    assert out.action == "skipped"
+    assert "already staged" in out.detail
+    assert not [c for c in h.s3.calls if c[0] == "put_object"] and not h.sqs.calls
 
 
 def test_idempotent_skip_when_response_already_filed(wired):

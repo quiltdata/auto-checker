@@ -143,6 +143,12 @@ class Handler:
             return self._log(Outcome("error", f"compose: {exc}", report))
 
         key = f"{handle}/{msg.logical_key}"
+        try:
+            self.s3.head_object(Bucket=bucket, Key=key)
+            # staged by an earlier delivery of this event; packaging already requested
+            return self._log(Outcome("skipped", f"response already staged at {key}", report))
+        except Exception:
+            pass
         self.s3.put_object(Bucket=bucket, Key=key, Body=msg.text.encode())
         delta = f"SET CONTAINS EXACTLY: {msg.logical_key}. T0 findings for {report.tophash[:12]}."
         self.sqs.send_message(
