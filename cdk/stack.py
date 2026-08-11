@@ -95,7 +95,8 @@ class CheckCommitStack(cdk.Stack):
         )
         fn.add_to_role_policy(
             iam.PolicyStatement(
-                actions=["s3:GetObject"],
+                # quilt3 reads manifests and entry bytes by versionId
+                actions=["s3:GetObject", "s3:GetObjectVersion"],
                 resources=[f"{a}/{p}" for a in bucket_arns for p in (f"{prefix}/*", ".quilt/*")],
             )
         )
