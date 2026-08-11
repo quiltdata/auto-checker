@@ -65,11 +65,16 @@ class CheckCommitStack(cdk.Stack):
             architecture=lambda_.Architecture.ARM_64,
             code=lambda_.Code.from_asset("../build/lambda"),
             handler="check_commit.lambda_handler.handler",
-            timeout=Duration.minutes(5),
-            memory_size=512,
+            timeout=Duration.minutes(10),
+            memory_size=1024,
             # one revision at a time: serializes checks and counter allocation
             reserved_concurrent_executions=1,
             environment={
+                # quilt3 writes config/cache under HOME, which is read-only in
+                # Lambda; /tmp is the only writable filesystem
+                "HOME": "/tmp",
+                "XDG_CACHE_HOME": "/tmp/xdg-cache",
+                "XDG_CONFIG_HOME": "/tmp/xdg-config",
                 "PACKAGE_PREFIX": prefix,
                 "SNS_TOPIC_ARN": topic.topic_arn,
                 "PACKAGER_QUEUE_URL": packager_queue_url,
