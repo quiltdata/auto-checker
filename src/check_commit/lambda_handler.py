@@ -141,7 +141,14 @@ class Handler:
                     "package_name": handle,
                     "commit_message": f"{self.policy.author}: T0 check of {report.tophash[:12]} — "
                     f"{len(report.findings)} finding(s). delta: {msg.logical_key}",
-                    "metadata": {"author": self.policy.author, "delta": delta},
+                    # full metadata for our own post, every field true of THIS
+                    # patch; set_meta replaces wholesale, so nothing inherited
+                    "metadata": {
+                        "author": self.policy.author,
+                        "delta": delta,
+                        "messages_added": [msg.logical_key],
+                        "changes": [],
+                    },
                 }
             ),
         )

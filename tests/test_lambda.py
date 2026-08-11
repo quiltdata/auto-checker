@@ -112,6 +112,9 @@ def test_defect_writes_back_and_notifies(wired):
     assert body["package_name"] == "occurrence/testpkg"
     assert body["metadata"]["author"] == "commit-protocol"
     assert "SET CONTAINS EXACTLY" in body["metadata"]["delta"]
+    # our own post carries complete, true structured metadata
+    assert body["metadata"]["messages_added"] == [key.removeprefix("occurrence/testpkg/")]
+    assert body["metadata"]["changes"] == []
 
 
 def test_notify_only_mode_never_writes(wired, monkeypatch):
