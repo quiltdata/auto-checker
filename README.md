@@ -74,3 +74,35 @@ The first run fetches revision views and changed-document contents into
 subsequent runs are fast and offline for everything but the revision listing.
 
 Per `04` §8, nothing deploys unless the backtest passes.
+
+## Deployment (04 §6)
+
+The deployed shape: EventBridge rule on the default bus (`com.quiltdata` /
+`package-revision`, `detail.handle` prefix) → SQS (+DLQ) → one Lambda around
+this same engine → SNS findings topic + CloudWatch alarms. Write-back goes
+through the Quilt stack's Packager queue; the Lambda never writes manifests.
+
+```bash
+# 1. gates: unit tests + the credentialed backtest
+pytest -q && check-commit backtest
+
+# 2. build the Lambda asset (manylinux wheels, no Docker needed)
+bash scripts/build-lambda.sh
+
+# 3. synth / deploy (context defaults: quilt-staging, occurrence,
+#    quilt-ernest-staging, writeBack=false)
+python3 -m venv .venv-cdk && .venv-cdk/bin/pip install -r cdk/requirements.txt
+cd cdk && cdk deploy   # add --context writeBack=true only after the cast-table entry exists
+```
+
+`writeBack=false` (the default) is **notify-only**: findings go to SNS and
+metrics, nothing is written to any package. Flipping it on requires the
+`CP` cast-table entry in the governed package (04 §10.2).
+
+Operational scripts:
+
+```bash
+python3 scripts/sns.py subscribe --email you@example.com   # findings topic
+python3 scripts/sns.py list
+python3 scripts/packager-roundtrip.py                      # 04 §8 gate #4, standalone
+```

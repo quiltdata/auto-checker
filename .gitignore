@@ -4,3 +4,6 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.venv-cdk
+build/
+cdk/cdk.out/
