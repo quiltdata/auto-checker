@@ -168,6 +168,16 @@ def test_malformed_and_unresolvable_uris(policy):
     assert ("uri-resolution", "unresolvable-pin") in kinds(fs)
 
 
+def test_unreadable_document_is_known_unresolved(policy):
+    prev = rev("a" * 64, BASE)
+    doc = "02-measure-selection/02.02C-note.md"
+    cur = rev("b" * 64, {**BASE, doc: (5, "hd")}, meta={"delta": f"Add {doc}."})
+    ctx = FakeCtx(policy)  # no contents: content() returns None
+    fs = checks.check_uris(prev, cur, ctx)
+    assert ("uri-resolution", "unreadable-document") in kinds(fs)
+    assert all(f.severity == "known-unresolved" for f in fs)
+
+
 def test_resolving_pin_passes(policy):
     prev = rev("a" * 64, BASE)
     doc = "02-measure-selection/02.02C-note.md"

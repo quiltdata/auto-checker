@@ -127,6 +127,35 @@ def test_notify_only_mode_never_writes(wired, monkeypatch):
     assert not h.s3.calls and not h.sqs.calls
 
 
+def test_stale_event_for_superseded_revision_never_writes(monkeypatch):
+    """A late/redelivered event for a non-head revision notifies but does not
+    compose against the stale snapshot (counter could collide with the head's)."""
+    base = {"README.md": (100, "h0"), "02-measure-selection/02.01K-x.md": (10, "h1")}
+    prev = rev("a" * 64, base)
+    mid = rev(
+        "b" * 64,
+        {**base, "02-measure-selection/02.02M-y.md": (20, "h2")},
+        message="routine update",
+        meta={"delta": "something unrelated", "author": "mathematician"},
+    )
+    head = rev(
+        "c" * 64,
+        {**base, "02-measure-selection/02.02M-y.md": (20, "h2"), "02-measure-selection/02.03M-z.md": (9, "h3")},
+        message="Add 02.03M",
+        meta={"delta": "Add 02-measure-selection/02.03M-z.md.", "author": "mathematician"},
+    )
+    pairs = [("1", "a" * 64), ("2", "b" * 64), ("3", "c" * 64)]
+    views = {"a" * 64: prev, "b" * 64: mid, "c" * 64: head}
+    monkeypatch.setattr(lh, "PackageHistory", lambda *a, **k: FakeHistory(pairs, views))
+    h = lh.Handler(env=ENV, s3=FakeClient(), sns=FakeClient(), sqs=FakeClient(), cloudwatch=FakeClient())
+
+    out = h.handle_detail(detail("b" * 64))  # defective, but no longer head
+    assert out.action == "checked"
+    assert "stale event" in out.detail
+    assert any(c[0] == "publish" for c in h.sns.calls)  # still notified
+    assert not h.s3.calls and not h.sqs.calls  # never writes
+
+
 def test_idempotent_skip_when_response_already_filed(wired):
     h, views = wired
     make_defective(views)

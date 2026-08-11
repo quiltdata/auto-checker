@@ -392,7 +392,16 @@ def check_uris(prev, cur, ctx) -> list[Finding]:
     for doc in docs:
         data = ctx.content(cur, doc)
         if data is None:
-            ctx.note(f"uri-resolution: could not fetch {doc}")
+            # a document we cannot read is a document we cannot clear
+            findings.append(
+                Finding(
+                    check="uri-resolution",
+                    severity=KNOWN_UNRESOLVED,
+                    kind="unreadable-document",
+                    paths=(doc,),
+                    detail=f"could not fetch {doc}; any quilt+s3 URIs in it are unverified",
+                )
+            )
             continue
         text = data.decode("utf-8", errors="replace")
         for uri in sorted(set(policy.QUILT_URI_RE.findall(text))):

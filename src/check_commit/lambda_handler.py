@@ -89,11 +89,12 @@ class Handler:
         if (cur.meta or {}).get("author") == self.policy.author:
             return self._self_apply(history, pairs, prev, cur, handle)
 
-        return self._check(history, pairs, prev, cur, handle, bucket)
+        is_head = index == len(pairs) - 1
+        return self._check(history, pairs, prev, cur, handle, bucket, is_head)
 
     # -- the two routes -----------------------------------------------------
 
-    def _check(self, history, pairs, prev, cur, handle, bucket) -> Outcome:
+    def _check(self, history, pairs, prev, cur, handle, bucket, is_head=True) -> Outcome:
         ctx = Context(history, pairs, online=True, policy=self.policy)
         report = run(prev, cur, ctx)
         self._metric("RevisionsChecked", 1)
@@ -117,6 +118,17 @@ class Handler:
         if not self.write_back:
             return self._log(
                 Outcome("checked", f"{catalog_hint}: {len(report.findings)} finding(s), notify-only", report)
+            )
+        if not is_head:
+            # a delayed/redelivered event for a superseded revision: composing
+            # against its snapshot would allocate a counter the head may have
+            # already claimed — notify only, never write from a stale view
+            return self._log(
+                Outcome(
+                    "checked",
+                    f"{catalog_hint}: {len(report.findings)} finding(s), stale event (head moved), notify-only",
+                    report,
+                )
             )
         return self._write_back(report, cur, prev, handle, bucket)
 
