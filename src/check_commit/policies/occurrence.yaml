@@ -52,8 +52,10 @@ grandfathered_bare_folders:
   - 01-backstory
 
 # Counter collisions adjudicated by the package as a known-unresolved spec
-# condition rather than a defect: both pairs were written against the same
-# head and neither party is recorded as at fault.
+# condition rather than a defect: all pairs were written against the same
+# head and neither party is recorded as at fault. The first two pairs were
+# adjudicated in issues/closed/030; the remaining four were surfaced by the
+# 166-revision backtest and ruled the same way in auto-checker#6.
 adjudicated_collisions:
   - folder: 02-measure-selection
     counter: "21"
@@ -61,4 +63,16 @@ adjudicated_collisions:
   - folder: 03-conditional-kernel
     counter: "05"
     letters: [M, P]
-adjudication_cite: issues/closed/030
+  - folder: 01-backstory
+    counter: "30"
+    letters: [M, P]
+  - folder: 01-backstory
+    counter: "21"
+    letters: [CC, M]
+  - folder: 02-measure-selection
+    counter: "07"
+    letters: [CC, M]
+  - folder: 02-measure-selection
+    counter: "23"
+    letters: [M, P]
+adjudication_cite: issues/closed/030 and quiltdata/auto-checker#6
