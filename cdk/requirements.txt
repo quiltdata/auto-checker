@@ -1,0 +1,4 @@
+# pinned below 2.200: newer libs emit cloud-assembly schema 54+, which needs
+# a newer cdk CLI than the tested 2.1118
+aws-cdk-lib>=2.150,<2.200
+constructs>=10,<11

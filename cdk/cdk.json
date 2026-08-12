@@ -1,0 +1,10 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "quiltStackName": "quilt-staging",
+    "packagePrefix": "occurrence",
+    "registryBuckets": "quilt-ernest-staging",
+    "writeBack": "true",
+    "region": "us-east-1"
+  }
+}

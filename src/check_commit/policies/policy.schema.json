@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "check-commit per-prefix policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["author", "cast_label", "watchlist", "structured_file_fields"],
+  "properties": {
+    "author": {
+      "type": "string",
+      "description": "Registry identity (spec:protocol/author_registry.yaml); goes in revision metadata"
+    },
+    "cast_label": {
+      "type": "string",
+      "pattern": "^[A-Z]{1,2}$",
+      "description": "Package-scoped cast label; goes in message filenames and From: headers"
+    },
+    "watchlist": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Regexes for artifacts whose undeclared size decrease is a defect"
+    },
+    "decrease_markers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Stems that count as declaring a reduction when in the same sentence as the file"
+    },
+    "structured_file_fields": {
+      "type": "object",
+      "additionalProperties": { "enum": ["added", "removed", "changed", "any"] },
+      "description": "user_meta fields naming files, mapped to the diff part their claims must land in"
+    },
+    "grandfathered_bare_folders": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "adjudicated_collisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["folder", "counter", "letters"],
+        "properties": {
+          "folder": { "type": "string" },
+          "counter": { "type": "string" },
+          "letters": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "adjudication_cite": { "type": "string" }
+  }
+}

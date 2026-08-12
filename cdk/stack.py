@@ -1,0 +1,143 @@
+"""The check-commit stack: rule -> SQS -> Lambda, SNS + alarms, minimal IAM.
+
+Shape per proj/260810-auto-checker 04 §6; permissions per §7. The Lambda
+holds no manifest-write access: package revisions are cut by the Quilt
+stack's Packager, reached via its exported queue.
+"""
+
+import aws_cdk as cdk
+from aws_cdk import (
+    Duration,
+    Fn,
+    aws_cloudwatch as cw,
+    aws_events as events,
+    aws_events_targets as targets,
+    aws_iam as iam,
+    aws_lambda as lambda_,
+    aws_lambda_event_sources as sources,
+    aws_sns as sns,
+    aws_sqs as sqs,
+)
+from constructs import Construct
+
+
+class CheckCommitStack(cdk.Stack):
+    def __init__(self, scope: Construct, cid: str, **kwargs):
+        super().__init__(scope, cid, **kwargs)
+
+        ctx = self.node.try_get_context
+        quilt_stack = ctx("quiltStackName") or "quilt-staging"
+        prefix = ctx("packagePrefix") or "occurrence"
+        buckets = (ctx("registryBuckets") or "quilt-ernest-staging").split(",")
+        write_back = str(ctx("writeBack") or "false").lower()
+
+        packager_queue_arn = Fn.import_value(f"{quilt_stack}-PackagerQueueArn")
+        packager_queue_url = Fn.import_value(f"{quilt_stack}-PackagerQueueUrl")
+
+        # -- ingress: default-bus rule -> SQS (04 §3, §6) --------------------
+        dlq = sqs.Queue(self, "DLQ", retention_period=Duration.days(14))
+        queue = sqs.Queue(
+            self,
+            "Events",
+            visibility_timeout=Duration.minutes(6),
+            dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
+        )
+        events.Rule(
+            self,
+            "PackageRevisions",
+            description=f"Quilt package-revision events for {prefix}/*",
+            event_pattern=events.EventPattern(
+                source=["com.quiltdata"],
+                detail_type=["package-revision"],
+                detail={"handle": [{"prefix": f"{prefix}/"}]},
+            ),
+            targets=[targets.SqsQueue(queue)],
+        )
+
+        # -- egress: findings topic ------------------------------------------
+        topic = sns.Topic(self, "Findings", display_name=f"check-commit {prefix} findings")
+
+        # -- the checker -------------------------------------------------------
+        fn = lambda_.Function(
+            self,
+            "Checker",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
+            code=lambda_.Code.from_asset("../build/lambda"),
+            handler="check_commit.lambda_handler.handler",
+            timeout=Duration.minutes(10),
+            memory_size=1024,
+            # one revision at a time: serializes checks and counter allocation
+            reserved_concurrent_executions=1,
+            environment={
+                # quilt3 writes config/cache under HOME, which is read-only in
+                # Lambda; /tmp is the only writable filesystem
+                "HOME": "/tmp",
+                "XDG_CACHE_HOME": "/tmp/xdg-cache",
+                "XDG_CONFIG_HOME": "/tmp/xdg-config",
+                "PACKAGE_PREFIX": prefix,
+                "SNS_TOPIC_ARN": topic.topic_arn,
+                "PACKAGER_QUEUE_URL": packager_queue_url,
+                "WRITE_BACK": write_back,
+                "QUILT_STACK_NAME": quilt_stack,
+                "TQDM_DISABLE": "1",
+            },
+        )
+        fn.add_event_source(
+            sources.SqsEventSource(queue, batch_size=1, report_batch_item_failures=True)
+        )
+
+        # -- permissions (04 §7): read prefix + .quilt, put message files only,
+        # send to the Packager, publish findings, emit metrics ------------------
+        bucket_arns = [f"arn:aws:s3:::{b}" for b in buckets]
+        fn.add_to_role_policy(
+            iam.PolicyStatement(actions=["s3:ListBucket"], resources=bucket_arns)
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                # quilt3 reads manifests and entry bytes by versionId
+                actions=["s3:GetObject", "s3:GetObjectVersion"],
+                resources=[f"{a}/{p}" for a in bucket_arns for p in (f"{prefix}/*", ".quilt/*")],
+            )
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="WriteOwnMessagesOnly",
+                actions=["s3:PutObject"],
+                resources=[f"{a}/{prefix}/*" for a in bucket_arns],
+            )
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(actions=["sqs:SendMessage"], resources=[packager_queue_arn])
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": "CheckCommit"}},
+            )
+        )
+        topic.grant_publish(fn)
+
+        # -- alarms ------------------------------------------------------------
+        for metric, description in (
+            ("Defects", "a governed package revision carries T0 defects"),
+            ("SelfApplicationFailures", "check-commit's own response revision failed verification"),
+            ("EngineErrors", "the checker could not complete a run"),
+        ):
+            cw.Alarm(
+                self,
+                f"{metric}Alarm",
+                alarm_description=description,
+                metric=cw.Metric(
+                    namespace="CheckCommit", metric_name=metric, statistic="Sum", period=Duration.minutes(5)
+                ),
+                threshold=1,
+                evaluation_periods=1,
+                comparison_operator=cw.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            )
+
+        cdk.CfnOutput(self, "FindingsTopicArn", value=topic.topic_arn)
+        cdk.CfnOutput(self, "CheckerFunctionName", value=fn.function_name)
+        cdk.CfnOutput(self, "EventQueueUrl", value=queue.queue_url)

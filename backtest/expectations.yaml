@@ -1,0 +1,63 @@
+# Acceptance corpus for check-commit (03 §1; 04 §4/§8).
+#
+# The pin is the head at audit time. Revisions after it exist but are not part
+# of acceptance. Hash keys are unique prefixes of revision top hashes.
+#
+# Where 03 §1 cites a *fix* revision as evidence of a defect (the two
+# claimed-but-not-performed remediations, the two issue-path restorations),
+# the defective revision the checker must flag is listed here, with the cited
+# evidence revision recorded in `evidence`.
+
+package: occurrence/probability
+registry: s3://quilt-ernest-staging
+pin: 7d74cc22a0547ec195a21e1da99fde8e3f2cb13ae15a8d8a4c27a79ce64cdfe4
+
+must_flag:
+  # -- delta/set divergence (cited directly) --
+  a7e4d820: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
+  1d2bf9ed: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
+  ed340d21: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
+  ce49ce8c: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
+  # the fifth delta/set incident: 67651f1c claimed the closed/029 append and
+  # omitted it; 142964c8 (cited in 03 §1) is the remediation recording that.
+  # The prose claim is unparseable deterministically; the same revision's
+  # stale inherited `changes` field carries the defect.
+  67651f1c: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence, evidence: "142964c8"}
+
+  # -- claimed-but-not-performed: the remediations carry the stale claims --
+  f6c34d02: {checks: [delta-set, metadata-hygiene], class: claimed-not-performed}
+  0ba0b51a: {checks: [delta-set, metadata-hygiene], class: claimed-not-performed}
+
+  # -- undeclared compression --
+  025de3f6: {checks: [watchlist-size], class: undeclared-compression}
+  3a65e8af: {checks: [watchlist-size], class: undeclared-compression}
+
+  # -- filename defects --
+  d76d3606: {checks: [filename-form], class: bare-form-in-dotted-folder}  # 37C
+  # 31C/31M collision happened in the same revision as a delta-set TP:
+  # 1d2bf9ed above must also carry a filename-form defect
+  1d2bf9ed-filename:
+    hash: 1d2bf9ed
+    checks: [filename-form]
+    class: counter-collision
+
+  # -- issue-path resurrections (fixes cited in 03: fceae62a, b95488f3) --
+  f5e80813: {checks: [issue-paths], class: resurrection, evidence: b95488f3}
+  015dfb1c: {checks: [issue-paths], class: resurrection, evidence: fceae62a}
+
+# Required false negatives: adjudicated counter collisions (issues/closed/030
+# for the first two, auto-checker#6 for the rest) must surface as
+# known-unresolved, never as filename-form defects.
+known_unresolved:
+  - hash: e2d812c8  # 03.05P lands beside 03.05M
+    paths_contain: "03-conditional-kernel/03.05"
+  - hash: e73238ad  # 02.21K lands beside 02.21P
+    paths_contain: "02-measure-selection/02.21"
+  - hash: f446818c  # 30M lands beside 30P
+    paths_contain: "01-backstory/30"
+  - hash: e044abd2  # 21CC lands beside 21M
+    paths_contain: "01-backstory/21"
+  - hash: e67a38df  # 02.07CC lands beside 02.07M
+    paths_contain: "02-measure-selection/02.07"
+  - hash: 20b7583a  # 02.23P lands beside 02.23M
+    paths_contain: "02-measure-selection/02.23"
