@@ -1,108 +1,231 @@
-# auto-checker
+# Auto-checker
 
-Auto-checker for governed Quilt packages — deterministic T0 `check-commit` (proj/260810-auto-checker).
+Auto-checker continuously checks new Quilt package revisions against the policy for their package prefix. It receives Quilt `package-revision` events, runs deterministic Tier 0 checks, reports defects, and writes an anaimail response back to the package when findings require one.
 
-`check-commit` runs six manifest-level checks on one revision of a governed package
-against its predecessor. No model, no inference: two revisions in, findings out,
-verdict gated on accumulated check state. Spec: `proj/260810-auto-checker`
-`04-mvp-tier-0-design.md` §4 (build spec `03` §1).
+Use this repository to put a package prefix such as `occurrence/*` or `myprefix/*` under automatic policy checking.
 
-## Install
+## How it works
 
-```bash
-pip install -e .
+Each deployment governs one package prefix:
+
+```text
+Quilt package revision
+  -> EventBridge prefix filter
+  -> SQS queue
+  -> checker Lambda
+  -> SNS findings and CloudWatch metrics
+  -> anaimail response through the Quilt Packager, when needed
 ```
 
-Requires AWS credentials with read access to the registry bucket. Nothing else.
+The package prefix controls both which revision events reach the checker and which policy file it loads. For example, a deployment with `packagePrefix=occurrence` checks `occurrence/*` packages with `src/check_commit/policies/occurrence.yaml`.
 
-## Use
+A missing policy is an engine error, never a silent pass.
+
+## Prerequisites
+
+You need:
+
+- a Quilt stack in the target AWS account and region;
+- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`;
+- one or more registry buckets containing the packages to check;
+- AWS credentials for the target account and region; and
+- AWS CDK bootstrapped in that account and region.
+
+The auto-checker stack must run in the same account and region as the Quilt stack whose Packager queue it uses.
+
+## 1. Configure a prefix policy
+
+Copy the worked example at `src/check_commit/policies/occurrence.yaml` to a file named for the prefix you want to govern:
 
 ```bash
-# check the head revision of a package
-check-commit check "quilt+s3://quilt-ernest-staging#package=occurrence/probability"
-
-# check a specific revision (any unique tophash prefix)
-check-commit check "quilt+s3://quilt-ernest-staging#package=occurrence/probability@7d74cc22"
-
-# machine-readable report
-check-commit check "quilt+s3://..." --json
+cp src/check_commit/policies/occurrence.yaml src/check_commit/policies/myprefix.yaml
 ```
 
-Exit codes: `0` pass (known-unresolved findings permitted and reported),
-`1` one or more defects, `2` engine error. Never an unconditional success.
+Edit the new file to describe conventions already established by the governed packages. The policy schema is `src/check_commit/policies/policy.schema.json`.
 
-## The six checks
+```yaml
+# Registered checker identity used in revision metadata.
+author: commit-protocol
 
-| Check | Finds |
-| --- | --- |
-| `delta-set` | revision metadata (`delta`, `adds`, `changes`, …) naming files the set omits, or set members nothing declares |
-| `watchlist-size` | undeclared size decreases on watchlisted artifacts (policy from the package README) |
-| `filename-form` | bare `NNL` names in `PARENT.NNL` folders; shared message counters |
-| `issue-paths` | closed issues resurrected at their vacated `issues/` path; vacated closures |
-| `uri-resolution` | `quilt+s3://` URIs in changed documents that do not resolve; pins that resolve to nothing |
-| `metadata-hygiene` | metadata fields inherited verbatim from the prior revision that describe files this patch did not touch |
+# Registered cast label used in message filenames and From headers.
+cast_label: CP
 
-Severities: `defect`, `known-unresolved` (e.g. the counter collisions adjudicated
-by `issues/closed/030` — reported, never silently passed, never a defect).
+# Regexes for artifacts whose undeclared size decrease is a defect.
+watchlist: []
 
-## Policy
+# Word stems that count as declaring a size decrease.
+decrease_markers: []
 
-Protocol-level forms (anaimail file naming, issue paths, URI syntax) live in the
-engine. Everything specific to a governed corpus — watchlist, adjudicated
-collisions, grandfathered folders, metadata field conventions — is **per-prefix
-policy**, auto-selected from the package's prefix: `occurrence/probability`
-loads [`src/check_commit/policies/occurrence.yaml`](src/check_commit/policies/occurrence.yaml).
-The deployed stack's `packagePrefix` input selects the event filter and the
-policy with the same value. A package whose prefix has no policy is an engine
-error (exit 2), never a silent pass. Override with `--policy <file>`.
+# Revision metadata fields that claim files were changed.
+structured_file_fields: {}
 
-## Backtest — the acceptance gate
+# Historical folders exempt from the current filename form.
+grandfathered_bare_folders: []
 
-```bash
-check-commit backtest
+# Counter collisions already adjudicated by the governed corpus.
+adjudicated_collisions: []
+adjudication_cite: ""
 ```
 
-Replays every revision of `occurrence/probability` up to the pinned audit head
-(`7d74cc22`) and asserts `backtest/expectations.yaml`: the named true positives
-of `proj/260810-auto-checker` `03` §1 must be flagged, and the two adjudicated
-counter collisions must surface as `known-unresolved`, not defects. Where `03`
-cites a fix revision as evidence, the expectations file maps it to the
-defective revision it documents.
+`author`, `cast_label`, `watchlist`, and `structured_file_fields` are required by the schema. The lists and mapping may initially be empty. Register the checker identity and cast label in the governed protocol before enabling write-back, and cite package READMEs, closed issues, or other governing records when adding exceptions.
 
-The first run fetches revision views and changed-document contents into
-`~/.cache/check-commit` (override with `--cache` or `CHECK_COMMIT_CACHE`);
-subsequent runs are fast and offline for everything but the revision listing.
+Policy controls corpus-specific behavior. Protocol-level rules—anaimail filename forms, issue paths, and `quilt+s3://` URI syntax—are built into the checker.
 
-Per `04` §8, nothing deploys unless the backtest passes.
+## 2. Test the policy locally
 
-## Deployment (04 §6)
-
-The deployed shape: EventBridge rule on the default bus (`com.quiltdata` /
-`package-revision`, `detail.handle` prefix) → SQS (+DLQ) → one Lambda around
-this same engine → SNS findings topic + CloudWatch alarms. Write-back goes
-through the Quilt stack's Packager queue; the Lambda never writes manifests.
+Install the package and run its tests:
 
 ```bash
-# 1. gates: unit tests + the credentialed backtest
-pytest -q && check-commit backtest
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
+pytest -q
+```
 
-# 2. build the Lambda asset (manylinux wheels, no Docker needed)
+Check the latest revision of a governed package:
+
+```bash
+check-commit check \
+  "quilt+s3://<registry-bucket>#package=myprefix/some-package"
+```
+
+Check a specific revision by full hash or unique hash prefix:
+
+```bash
+check-commit check \
+  "quilt+s3://<registry-bucket>#package=myprefix/some-package@<tophash>"
+```
+
+Useful options:
+
+- `--policy path/to/policy.yaml` tests a policy before placing it under `policies/`.
+- `--json` emits a machine-readable report.
+- `--offline` skips resolution of URIs that point outside the checked package.
+- `check-commit compose <URI>` previews the response message without writing anything.
+
+Exit codes are `0` for pass, `1` for one or more defects, and `2` for an engine or configuration error. Known-unresolved findings are reported but do not produce a failing exit code.
+
+## 3. Build and deploy
+
+Policy files ship inside the Lambda asset, so rebuild after every policy change:
+
+```bash
 bash scripts/build-lambda.sh
 
-# 3. synth / deploy (context defaults: quilt-staging, occurrence,
-#    quilt-ernest-staging, writeBack=false)
-python3 -m venv .venv-cdk && .venv-cdk/bin/pip install -r cdk/requirements.txt
-cd cdk && cdk deploy   # add --context writeBack=true only after the cast-table entry exists
+python3 -m venv .venv-cdk
+.venv-cdk/bin/pip install -r cdk/requirements.txt
+
+(cd cdk && ../.venv-cdk/bin/cdk deploy \
+  --context packagePrefix=myprefix \
+  --context registryBuckets=<bucket1>,<bucket2> \
+  --context quiltStackName=<quilt-stack-name> \
+  --context region=<aws-region> \
+  --context writeBack=true)
 ```
 
-`writeBack=false` (the default) is **notify-only**: findings go to SNS and
-metrics, nothing is written to any package. Flipping it on requires the
-`CP` cast-table entry in the governed package (04 §10.2).
+This creates:
 
-Operational scripts:
+- an EventBridge rule for package revisions under `myprefix/`;
+- an SQS event queue and dead-letter queue;
+- a Lambda that loads `myprefix.yaml`;
+- prefix-scoped S3 permissions;
+- an SNS findings topic; and
+- CloudWatch metrics and alarms.
+
+The checker may upload its response file under the governed prefix, but it cannot write Quilt manifests. It asks the Quilt Packager to create the response revision.
+
+The CDK app currently uses the stack ID `check-commit`. To deploy more than one prefix in the same account and region, first give each deployment a distinct stack ID in `cdk/app.py`, such as `check-commit-myprefix`.
+
+### Notify-only mode
+
+To check and alert without writing responses, deploy with:
 
 ```bash
-python3 scripts/sns.py subscribe --email you@example.com   # findings topic
-python3 scripts/sns.py list
-python3 scripts/packager-roundtrip.py                      # 04 §8 gate #4, standalone
+(cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
 ```
+
+Notify-only mode is useful for evaluation or troubleshooting. Normal operation uses write-back once the checker's identity and cast label are registered for the governed prefix.
+
+## 4. Subscribe to findings
+
+The deployment outputs `FindingsTopicArn`, `CheckerFunctionName`, and `EventQueueUrl`. Subscribe an operator to the findings topic:
+
+```bash
+python3 scripts/sns.py subscribe \
+  --email you@example.com \
+  --stack-name check-commit \
+  --region <aws-region>
+```
+
+Confirm the email subscription, then inspect or remove subscriptions with:
+
+```bash
+python3 scripts/sns.py list --stack-name check-commit --region <aws-region>
+python3 scripts/sns.py unsubscribe <subscription-arn> \
+  --stack-name check-commit --region <aws-region>
+```
+
+## 5. Verify automatic checking
+
+Push a revision to a package under the configured prefix and follow the checker logs:
+
+```bash
+aws logs tail /aws/lambda/<CheckerFunctionName> --follow --region <aws-region>
+```
+
+Each event produces a JSON outcome with one of these actions:
+
+- `checked`: a governed revision was checked;
+- `self-applied`: the Packager-created checker response was verified;
+- `skipped`: the event was malformed or outside the configured prefix; or
+- `error`: the checker could not complete the run.
+
+A clean revision is logged and needs no response. Findings are published to SNS and, with write-back enabled, rendered as an anaimail message and appended through the Quilt Packager. The checker recognizes and verifies its own response revision without generating a response loop.
+
+Monitor the `CheckCommit` CloudWatch namespace and these alarms:
+
+- `DefectsAlarm`
+- `EngineErrorsAlarm`
+- `SelfApplicationFailuresAlarm`
+
+## Checks performed
+
+| Check | What it detects |
+| --- | --- |
+| `delta-set` | Revision metadata that names files absent from the actual change set, or changed files omitted from declared metadata. |
+| `watchlist-size` | Undeclared size decreases in policy-defined artifacts. |
+| `filename-form` | Invalid anaimail filename forms and unadjudicated counter collisions. |
+| `issue-paths` | Closed issues resurrected at vacated paths, or closure records removed incorrectly. |
+| `uri-resolution` | Malformed or unresolved `quilt+s3://` references in changed documents. |
+| `metadata-hygiene` | Stale inherited metadata that describes files untouched by the revision. |
+
+Findings are classified as `defect` or `known-unresolved`. Policy-defined adjudications remain visible as known-unresolved rather than being silently ignored.
+
+## Updating a deployed policy
+
+After changing a prefix policy:
+
+```bash
+pytest -q
+bash scripts/build-lambda.sh
+(cd cdk && ../.venv-cdk/bin/cdk deploy \
+  --context packagePrefix=myprefix \
+  --context registryBuckets=<bucket1>,<bucket2> \
+  --context quiltStackName=<quilt-stack-name> \
+  --context region=<aws-region> \
+  --context writeBack=true)
+```
+
+For the `occurrence` policy, `check-commit backtest` replays the pinned acceptance corpus and verifies the expected true positives and known-unresolved cases.
+
+## Development
+
+Run the test suite with `pytest -q`. The core engine and Lambda use the same policy loader and checks, so local CLI results exercise the same checking behavior used after deployment.
+
+The design and operational background are maintained in the auto-checker project package, especially `05-auto-checker-stack.md` and `06-auto-checking-a-prefix.md`.
+
+## Related Quilt packages
+
+- [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
+- [`occurrence/spec`](https://nightly.quilttest.com/b/quilt-ernest-staging/packages/occurrence/spec) — governing occurrence protocol and policy specifications
+- [`marketing/ai-security`](https://nightly.quilttest.com/b/quilt-leadership/packages/marketing/ai-security) — related AI security guidance
