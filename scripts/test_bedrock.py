@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect Amazon Bedrock foundation models and inference profiles.
+"""Inspect and prompt Amazon Bedrock Nemotron models.
 
 By default, ``list`` searches for Nemotron resources in us-east-1::
 
@@ -7,19 +7,68 @@ By default, ``list`` searches for Nemotron resources in us-east-1::
     python3 scripts/test_bedrock.py list nemotron
     python3 scripts/test_bedrock.py list nemotron --region us-west-2
 
-The command is read-only. It requires AWS credentials with permission to call
-``bedrock:ListFoundationModels`` and ``bedrock:ListInferenceProfiles``.
+``prompt`` selects the largest active on-demand Nemotron model and accepts text
+as command-line arguments or, when omitted, from standard input::
+
+    python3 scripts/test_bedrock.py prompt "Explain model distillation"
+    echo "Explain model distillation" | python3 scripts/test_bedrock.py prompt
+    python3 scripts/test_bedrock.py prompt --info "Explain model distillation"
+
+Catalog operations are read-only, while ``prompt`` performs a billable model
+inference. AWS credentials must allow the corresponding Bedrock list and invoke
+operations.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, TextIO
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
+
+DEFAULT_MODEL_QUERY = "nemotron"
+PRICING_AS_OF = "2026-08-29"
+PRICING_SOURCE = "https://aws.amazon.com/bedrock/pricing/"
+
+# Standard on-demand USD per million input/output tokens. Bedrock's runtime
+# response includes token usage but not prices, so estimates use the published
+# regional rates for the model selected by this script.
+ON_DEMAND_PRICES: dict[tuple[str, str], tuple[float, float]] = {
+    ("nvidia.nemotron-super-3-120b", region): (0.15, 0.65)
+    for region in ("us-east-1", "us-east-2", "us-west-2")
+}
+ON_DEMAND_PRICES.update(
+    {
+        ("nvidia.nemotron-super-3-120b", region): (0.18, 0.78)
+        for region in (
+            "us-gov-east-1",
+            "us-gov-west-1",
+            "ap-south-1",
+            "eu-west-1",
+            "eu-south-1",
+            "sa-east-1",
+            "ap-northeast-1",
+            "ap-southeast-3",
+            "eu-central-1",
+            "eu-north-1",
+        )
+    }
+)
+ON_DEMAND_PRICES[("nvidia.nemotron-super-3-120b", "eu-west-2")] = (0.23, 1.01)
+ON_DEMAND_PRICES[("nvidia.nemotron-super-3-120b", "ap-southeast-2")] = (0.15, 0.67)
+
+TIER_MULTIPLIERS = {
+    "default": 1.0,
+    "standard": 1.0,
+    "priority": 1.75,
+    "flex": 0.5,
+}
 
 
 def list_foundation_models(client: Any) -> list[dict[str, Any]]:
@@ -94,6 +143,123 @@ def matching_inference_profiles(
     )
 
 
+def _model_size_billions(model: dict[str, Any]) -> float:
+    """Extract the largest parameter count such as 120 from a ``120b`` model ID."""
+    sizes = re.findall(r"(\d+(?:\.\d+)?)b\b", str(model.get("modelId", "")), re.I)
+    return max((float(size) for size in sizes), default=-1.0)
+
+
+def highest_available_model(
+    models: Iterable[dict[str, Any]], query: str = DEFAULT_MODEL_QUERY
+) -> dict[str, Any]:
+    """Select the largest active, on-demand model matching ``query``."""
+    candidates = [
+        model
+        for model in matching_foundation_models(models, query)
+        if str(model.get("modelLifecycle", {}).get("status", "")).upper() == "ACTIVE"
+        and "ON_DEMAND"
+        in {str(value).upper() for value in model.get("inferenceTypesSupported", [])}
+    ]
+    if not candidates:
+        raise LookupError(f"no active on-demand models matching {query!r}")
+
+    return max(
+        candidates,
+        key=lambda model: (
+            _model_size_billions(model),
+            str(model.get("modelId", "")).casefold(),
+        ),
+    )
+
+
+def read_prompt(arguments: Sequence[str], stdin: TextIO) -> str:
+    """Read prompt text from command arguments, falling back to standard input."""
+    prompt = " ".join(arguments) if arguments else stdin.read()
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("prompt text is required as an argument or on stdin")
+    return prompt
+
+
+def response_text(response: dict[str, Any]) -> str:
+    """Extract text blocks from a Bedrock Converse response."""
+    content = response.get("output", {}).get("message", {}).get("content", [])
+    text = "".join(str(block["text"]) for block in content if "text" in block).strip()
+    if not text:
+        raise ValueError("Bedrock response contained no text")
+    return text
+
+
+def estimated_cost(
+    model_id: str,
+    region: str,
+    usage: dict[str, Any],
+    service_tier: dict[str, Any],
+) -> dict[str, Any]:
+    """Estimate USD cost from published on-demand rates and response token usage."""
+    rates = ON_DEMAND_PRICES.get((model_id, region))
+    tier = str(service_tier.get("type", "default")).casefold()
+    multiplier = TIER_MULTIPLIERS.get(tier)
+    result: dict[str, Any] = {
+        "amountUsd": None,
+        "pricingAsOf": PRICING_AS_OF,
+        "pricingSource": PRICING_SOURCE,
+    }
+
+    if rates is None:
+        result["unavailableReason"] = (
+            f"no embedded pricing for model {model_id!r} in {region!r}"
+        )
+        return result
+    if multiplier is None:
+        result["unavailableReason"] = f"unknown service tier {tier!r}"
+        return result
+
+    input_rate, output_rate = rates
+    input_tokens = int(usage.get("inputTokens", 0))
+    output_tokens = int(usage.get("outputTokens", 0))
+    amount = (
+        input_tokens * input_rate + output_tokens * output_rate
+    ) / 1_000_000 * multiplier
+    result.update(
+        {
+            "amountUsd": round(amount, 12),
+            "inputRateUsdPerMillionTokens": input_rate,
+            "outputRateUsdPerMillionTokens": output_rate,
+            "serviceTierMultiplier": multiplier,
+            "note": "estimate excludes taxes, negotiated discounts, and cache-specific pricing",
+        }
+    )
+    return result
+
+
+def runtime_info(
+    response: dict[str, Any], model_id: str, region: str
+) -> dict[str, Any]:
+    """Build stable runtime metadata from a Bedrock Converse response."""
+    usage = response.get("usage", {})
+    service_tier = response.get("serviceTier", {})
+    response_metadata = response.get("ResponseMetadata", {})
+    info: dict[str, Any] = {
+        "modelId": model_id,
+        "region": region,
+        "stopReason": response.get("stopReason"),
+        "usage": usage,
+        "metrics": response.get("metrics", {}),
+        "performanceConfig": response.get("performanceConfig", {}),
+        "serviceTier": service_tier,
+        "estimatedCost": estimated_cost(model_id, region, usage, service_tier),
+        "request": {
+            "requestId": response_metadata.get("RequestId"),
+            "httpStatusCode": response_metadata.get("HTTPStatusCode"),
+            "retryAttempts": response_metadata.get("RetryAttempts"),
+        },
+    }
+    if "additionalModelResponseFields" in response:
+        info["additionalModelResponseFields"] = response["additionalModelResponseFields"]
+    return info
+
+
 def print_results(
     models: Sequence[dict[str, Any]],
     profiles: Sequence[dict[str, Any]],
@@ -130,43 +296,80 @@ def print_results(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["list"])
-    parser.add_argument(
+    commands = parser.add_subparsers(dest="action", required=True)
+
+    list_parser = commands.add_parser("list", help="list matching models and profiles")
+    list_parser.add_argument(
         "query",
         nargs="?",
-        default="nemotron",
-        help="case-insensitive resource search (default: nemotron)",
+        default=DEFAULT_MODEL_QUERY,
+        help=f"case-insensitive resource search (default: {DEFAULT_MODEL_QUERY})",
     )
-    parser.add_argument("--region", default="us-east-1")
+    list_parser.add_argument("--region", default="us-east-1")
+
+    prompt_parser = commands.add_parser("prompt", help="prompt the largest Nemotron model")
+    prompt_parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="prompt text; reads stdin when omitted",
+    )
+    prompt_parser.add_argument("--region", default="us-east-1")
+    prompt_parser.add_argument(
+        "--info",
+        action="store_true",
+        help="write cost, usage, latency, and request metadata as JSON to stderr",
+    )
     return parser
+
+
+def run_list(args: argparse.Namespace) -> int:
+    client = boto3.client("bedrock", region_name=args.region)
+    if not hasattr(client, "list_inference_profiles"):
+        raise RuntimeError(
+            "the installed boto3/botocore does not support Bedrock inference "
+            "profiles; upgrade boto3"
+        )
+
+    models = matching_foundation_models(list_foundation_models(client), args.query)
+    model_arns = {str(model["modelArn"]) for model in models if model.get("modelArn")}
+    profiles = matching_inference_profiles(
+        list_inference_profiles(client), args.query, model_arns
+    )
+    print_results(models, profiles, args.query, args.region)
+    return 0
+
+
+def run_prompt(args: argparse.Namespace, stdin: TextIO = sys.stdin) -> int:
+    prompt = read_prompt(args.prompt, stdin)
+    bedrock = boto3.client("bedrock", region_name=args.region)
+    model = highest_available_model(list_foundation_models(bedrock))
+    model_id = str(model["modelId"])
+
+    runtime = boto3.client("bedrock-runtime", region_name=args.region)
+    response = runtime.converse(
+        modelId=model_id,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+    )
+    if args.info:
+        print(
+            json.dumps(runtime_info(response, model_id, args.region), indent=2, sort_keys=True),
+            file=sys.stderr,
+        )
+    else:
+        print(f"model: {model_id}", file=sys.stderr)
+    print(response_text(response))
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    client = boto3.client("bedrock", region_name=args.region)
-
-    if not hasattr(client, "list_inference_profiles"):
-        print(
-            "error: the installed boto3/botocore does not support Bedrock "
-            "inference profiles; upgrade boto3",
-            file=sys.stderr,
-        )
-        return 2
-
     try:
-        models = matching_foundation_models(list_foundation_models(client), args.query)
-        model_arns = {
-            str(model["modelArn"]) for model in models if model.get("modelArn")
-        }
-        profiles = matching_inference_profiles(
-            list_inference_profiles(client), args.query, model_arns
-        )
-    except (BotoCoreError, ClientError) as error:
+        if args.action == "list":
+            return run_list(args)
+        return run_prompt(args)
+    except (BotoCoreError, ClientError, LookupError, RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-
-    print_results(models, profiles, args.query, args.region)
-    return 0
 
 
 if __name__ == "__main__":
