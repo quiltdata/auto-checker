@@ -418,6 +418,7 @@ def run_prompt(args: argparse.Namespace, stdin: TextIO = sys.stdin) -> int:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
         inferenceConfig={"maxTokens": args.max_tokens},
     )
+    text = response_text(response)
     if args.info:
         print(
             json.dumps(
@@ -429,7 +430,7 @@ def run_prompt(args: argparse.Namespace, stdin: TextIO = sys.stdin) -> int:
         )
     else:
         print(f"model: {model_id}", file=sys.stderr)
-    print(response_text(response))
+    print(text)
     return 0
 
 

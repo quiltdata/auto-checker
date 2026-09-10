@@ -221,3 +221,58 @@ def test_info_requires_pricing_for_explicit_model(bedrock_script, monkeypatch):
         bedrock_script.run_prompt(
             prompt_args(prompt=["hello"], model=model_id, info=True), io.StringIO()
         )
+
+
+@pytest.mark.parametrize(
+    ("service_tier", "expected_amount"),
+    [
+        ({}, 0.8),
+        ({"type": "standard"}, 0.8),
+        ({"type": "priority"}, 1.4),
+        ({"type": "flex"}, 0.4),
+    ],
+)
+def test_estimated_cost_covers_supported_service_tiers(
+    bedrock_script, service_tier, expected_amount
+):
+    cost = bedrock_script.estimated_cost(
+        "nvidia.nemotron-super-3-120b",
+        "us-east-1",
+        {"inputTokens": 1_000_000, "outputTokens": 1_000_000},
+        service_tier,
+    )
+
+    assert cost["amountUsd"] == pytest.approx(expected_amount)
+    assert cost["serviceTierMultiplier"] == pytest.approx(expected_amount / 0.8)
+
+
+def test_estimated_cost_rejects_unknown_service_tier(bedrock_script):
+    cost = bedrock_script.estimated_cost(
+        "nvidia.nemotron-super-3-120b",
+        "us-east-1",
+        {"inputTokens": 1, "outputTokens": 1},
+        {"type": "future-tier"},
+    )
+
+    assert cost["amountUsd"] is None
+    assert cost["unavailableReason"] == "unknown service tier 'future-tier'"
+
+
+def test_info_error_is_not_prefixed_with_json(
+    bedrock_script, monkeypatch, capsys
+):
+    control = FakeControl([model("nvidia.nemotron-super-3-120b")])
+    runtime = FakeRuntime(
+        {"output": {"message": {"content": []}}, "usage": {"totalTokens": 1}}
+    )
+    monkeypatch.setattr(
+        bedrock_script.boto3,
+        "client",
+        lambda service, region_name: runtime if service == "bedrock-runtime" else control,
+    )
+
+    assert bedrock_script.main(["prompt", "--info", "hello"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: Bedrock response contained no text\n"
