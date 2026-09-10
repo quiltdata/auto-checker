@@ -105,6 +105,37 @@ Useful options:
 
 Exit codes are `0` for pass, `1` for one or more defects, and `2` for an engine or configuration error. Known-unresolved findings are reported but do not produce a failing exit code.
 
+## Bedrock Nemotron utility
+
+`scripts/test_bedrock.py` discovers and prompts NVIDIA Nemotron models through Amazon Bedrock. It defaults to `us-east-1`; pass `--region` because model availability and pricing vary by region.
+
+List matching foundation models and inference profiles:
+
+```bash
+python3 scripts/test_bedrock.py list nemotron
+```
+
+Prompt the largest active on-demand Nemotron model using an argument or stdin:
+
+```bash
+python3 scripts/test_bedrock.py prompt --max-tokens 256 "Summarize this design"
+echo "Summarize this design" | python3 scripts/test_bedrock.py prompt
+```
+
+Automatic selection fails before invocation if the selected model and region do not have embedded pricing. Use `--model <model-id>` to pin a model rather than follow catalog changes. Add `--info` to write token usage, latency, request metadata, and estimated cost as JSON to stderr while leaving generated text on stdout:
+
+```bash
+python3 scripts/test_bedrock.py prompt \
+  --model nvidia.nemotron-super-3-120b \
+  --max-tokens 128 \
+  --info \
+  "Reply briefly"
+```
+
+`--max-tokens` defaults to 512 and caps generated tokens. Cost is an estimate based on embedded [Amazon Bedrock on-demand rates](https://aws.amazon.com/bedrock/pricing/), returned token counts, and service tier; it excludes taxes, negotiated discounts, and cache-specific pricing.
+
+The caller needs `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` for discovery and `bedrock:InvokeModel` for prompting. Depending on account and model-access state, an administrator may also need to accept provider terms or grant AWS Marketplace subscription permissions. Prompt contents are sent to the Bedrock endpoint in the selected region and processed by the third-party NVIDIA model; do not submit sensitive data unless that path is permitted by your organization’s data-handling policy.
+
 ## 3. Build and deploy
 
 Policy files ship inside the Lambda asset, so rebuild after every policy change:

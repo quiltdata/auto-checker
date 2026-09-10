@@ -14,9 +14,10 @@ as command-line arguments or, when omitted, from standard input::
     echo "Explain model distillation" | python3 scripts/test_bedrock.py prompt
     python3 scripts/test_bedrock.py prompt --info "Explain model distillation"
 
-Catalog operations are read-only, while ``prompt`` performs a billable model
-inference. AWS credentials must allow the corresponding Bedrock list and invoke
-operations.
+Use ``--model`` to pin an active on-demand Nemotron model and ``--max-tokens``
+to cap generated output. Catalog operations are read-only, while ``prompt``
+performs a billable model inference. AWS credentials must allow the
+corresponding Bedrock list and invoke operations.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import argparse
 import json
 import re
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TextIO
 
 import boto3
@@ -33,6 +34,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 
 DEFAULT_MODEL_QUERY = "nemotron"
+DEFAULT_MAX_TOKENS = 512
+MINIMUM_BOTO3_VERSION = "1.42.1"
 PRICING_AS_OF = "2026-08-29"
 PRICING_SOURCE = "https://aws.amazon.com/bedrock/pricing/"
 
@@ -71,20 +74,33 @@ TIER_MULTIPLIERS = {
 }
 
 
+def require_client_method(client: Any, method_name: str, service_name: str) -> Callable[..., Any]:
+    """Return a client method or raise a concise SDK compatibility error."""
+    method = getattr(client, method_name, None)
+    if not callable(method):
+        raise RuntimeError(
+            f"the installed boto3/botocore does not support "
+            f"{service_name}.{method_name}; install boto3>={MINIMUM_BOTO3_VERSION}"
+        )
+    return method
+
+
 def list_foundation_models(client: Any) -> list[dict[str, Any]]:
     """Return all Bedrock foundation-model summaries for the current region."""
-    response = client.list_foundation_models()
+    method = require_client_method(client, "list_foundation_models", "Bedrock")
+    response = method()
     return list(response.get("modelSummaries", []))
 
 
 def list_inference_profiles(client: Any) -> list[dict[str, Any]]:
     """Return all Bedrock inference-profile summaries, following pagination."""
+    method = require_client_method(client, "list_inference_profiles", "Bedrock")
     profiles: list[dict[str, Any]] = []
     token: str | None = None
 
     while True:
         kwargs = {"nextToken": token} if token else {}
-        response = client.list_inference_profiles(**kwargs)
+        response = method(**kwargs)
         profiles.extend(response.get("inferenceProfileSummaries", []))
         token = response.get("nextToken")
         if not token:
@@ -149,17 +165,24 @@ def _model_size_billions(model: dict[str, Any]) -> float:
     return max((float(size) for size in sizes), default=-1.0)
 
 
-def highest_available_model(
+def available_models(
     models: Iterable[dict[str, Any]], query: str = DEFAULT_MODEL_QUERY
-) -> dict[str, Any]:
-    """Select the largest active, on-demand model matching ``query``."""
-    candidates = [
+) -> list[dict[str, Any]]:
+    """Return active, on-demand models matching ``query``."""
+    return [
         model
         for model in matching_foundation_models(models, query)
         if str(model.get("modelLifecycle", {}).get("status", "")).upper() == "ACTIVE"
         and "ON_DEMAND"
         in {str(value).upper() for value in model.get("inferenceTypesSupported", [])}
     ]
+
+
+def highest_available_model(
+    models: Iterable[dict[str, Any]], query: str = DEFAULT_MODEL_QUERY
+) -> dict[str, Any]:
+    """Select the largest active, on-demand model matching ``query``."""
+    candidates = available_models(models, query)
     if not candidates:
         raise LookupError(f"no active on-demand models matching {query!r}")
 
@@ -170,6 +193,39 @@ def highest_available_model(
             str(model.get("modelId", "")).casefold(),
         ),
     )
+
+
+def select_model(
+    models: Iterable[dict[str, Any]], requested_model_id: str | None = None
+) -> dict[str, Any]:
+    """Select an explicitly requested model or the highest available Nemotron."""
+    model_list = list(models)
+    if requested_model_id is None:
+        return highest_available_model(model_list)
+
+    for model in available_models(model_list):
+        if str(model.get("modelId", "")) == requested_model_id:
+            return model
+    raise LookupError(
+        f"model {requested_model_id!r} is not an active on-demand Nemotron model"
+    )
+
+
+def require_pricing(model_id: str, region: str) -> None:
+    """Fail before a billable call when this script cannot estimate its cost."""
+    if (model_id, region) not in ON_DEMAND_PRICES:
+        raise RuntimeError(
+            f"no embedded pricing for model {model_id!r} in {region!r}; "
+            "choose a priced model/region or update ON_DEMAND_PRICES"
+        )
+
+
+def positive_int(value: str) -> int:
+    """Parse a strictly positive argparse integer."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def read_prompt(arguments: Sequence[str], stdin: TextIO) -> str:
@@ -234,7 +290,7 @@ def estimated_cost(
 
 
 def runtime_info(
-    response: dict[str, Any], model_id: str, region: str
+    response: dict[str, Any], model_id: str, region: str, max_tokens: int
 ) -> dict[str, Any]:
     """Build stable runtime metadata from a Bedrock Converse response."""
     usage = response.get("usage", {})
@@ -249,6 +305,7 @@ def runtime_info(
         "performanceConfig": response.get("performanceConfig", {}),
         "serviceTier": service_tier,
         "estimatedCost": estimated_cost(model_id, region, usage, service_tier),
+        "invocation": {"maxTokens": max_tokens},
         "request": {
             "requestId": response_metadata.get("RequestId"),
             "httpStatusCode": response_metadata.get("HTTPStatusCode"),
@@ -307,13 +364,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_parser.add_argument("--region", default="us-east-1")
 
-    prompt_parser = commands.add_parser("prompt", help="prompt the largest Nemotron model")
+    prompt_parser = commands.add_parser("prompt", help="prompt a Nemotron model")
     prompt_parser.add_argument(
         "prompt",
         nargs="*",
         help="prompt text; reads stdin when omitted",
     )
     prompt_parser.add_argument("--region", default="us-east-1")
+    prompt_parser.add_argument(
+        "--model",
+        help="exact active on-demand Nemotron model ID (default: highest available)",
+    )
+    prompt_parser.add_argument(
+        "--max-tokens",
+        type=positive_int,
+        default=DEFAULT_MAX_TOKENS,
+        help=f"maximum generated tokens (default: {DEFAULT_MAX_TOKENS})",
+    )
     prompt_parser.add_argument(
         "--info",
         action="store_true",
@@ -324,12 +391,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_list(args: argparse.Namespace) -> int:
     client = boto3.client("bedrock", region_name=args.region)
-    if not hasattr(client, "list_inference_profiles"):
-        raise RuntimeError(
-            "the installed boto3/botocore does not support Bedrock inference "
-            "profiles; upgrade boto3"
-        )
-
     models = matching_foundation_models(list_foundation_models(client), args.query)
     model_arns = {str(model["modelArn"]) for model in models if model.get("modelArn")}
     profiles = matching_inference_profiles(
@@ -342,17 +403,28 @@ def run_list(args: argparse.Namespace) -> int:
 def run_prompt(args: argparse.Namespace, stdin: TextIO = sys.stdin) -> int:
     prompt = read_prompt(args.prompt, stdin)
     bedrock = boto3.client("bedrock", region_name=args.region)
-    model = highest_available_model(list_foundation_models(bedrock))
+    model = select_model(list_foundation_models(bedrock), args.model)
     model_id = str(model["modelId"])
 
+    # Automatic selection must remain cost-predictable. An explicit model is a
+    # deliberate override, but --info still promises an estimate before spend.
+    if args.model is None or args.info:
+        require_pricing(model_id, args.region)
+
     runtime = boto3.client("bedrock-runtime", region_name=args.region)
-    response = runtime.converse(
+    converse = require_client_method(runtime, "converse", "BedrockRuntime")
+    response = converse(
         modelId=model_id,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": args.max_tokens},
     )
     if args.info:
         print(
-            json.dumps(runtime_info(response, model_id, args.region), indent=2, sort_keys=True),
+            json.dumps(
+                runtime_info(response, model_id, args.region, args.max_tokens),
+                indent=2,
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
     else:
