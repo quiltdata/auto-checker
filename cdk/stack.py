@@ -44,8 +44,11 @@ class CheckCommitStack(cdk.Stack):
 
         # The Packager queue is write-back's only destination, so a notify-only
         # deployment neither imports it nor is granted anything against it.
-        # Importing unconditionally would make the stack fail to synth against a
-        # Quilt stack that does not export the queue, rather than merely deploy
+        # Fn.import_value is a template-level intrinsic: synth emits it
+        # unresolved, and CloudFormation fails the deployment with "No export
+        # named ... found" when it cannot resolve it. Importing unconditionally
+        # would therefore make a notify-only deployment fail to deploy against a
+        # Quilt stack that does not export the queue, rather than deploy fine
         # without write-back.
         packager_queue_arn = (
             Fn.import_value(f"{quilt_stack}-PackagerQueueArn") if writes_enabled else ""

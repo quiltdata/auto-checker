@@ -24,16 +24,18 @@ corpus lives. See
   belong to.
 - A notify-only stack no longer depends on the Packager queue. The
   `Fn.import_value` calls for `<quiltStackName>-PackagerQueueArn` and
-  `-PackagerQueueUrl` are made only when `writeBack=true`, so the stack synths
-  and deploys against a Quilt stack that does not export them. Previously a
-  missing export was a synth failure regardless of whether write-back was
-  enabled — the one dependency a notify-only deployment has no use for.
+  `-PackagerQueueUrl` are made only when `writeBack=true`, so the stack deploys
+  against a Quilt stack that does not export them. Previously the import was
+  emitted regardless of whether write-back was enabled, and because
+  `Fn.import_value` is a template-level intrinsic that synth emits unresolved,
+  the failure landed at deployment as CloudFormation's "No export named ...
+  found" — on the one dependency a notify-only deployment has no use for.
 - A notify-only stack is granted no write access. `s3:PutObject` on
   `{prefix}/*` and `sqs:SendMessage` on the Packager queue are attached only
   when `writeBack=true`. Read grants (`s3:ListBucket`, `s3:GetObject`,
-  `s3:GetObjectVersion` on `{prefix}/*` and `.quilt/*`) are unchanged. The
-  Lambda could not legally use the write grants on this registry anyway: the
-  write-back payload does not yet satisfy the registered workflow.
+  `s3:GetObjectVersion` on `{prefix}/*` and `.quilt/*`) are unchanged. With
+  write-back disabled the Lambda has no use for either grant, and holding them
+  would be granting write access to a governed registry for no reason.
 - `scripts/packager-roundtrip.py` defaults to `--stack-name open-quilt-bio` and
   `--bucket protology`, and its request is now one the registry admits: the two
   fields the registered schema requires, instead of the forbidden `author` and
@@ -59,12 +61,15 @@ corpus lives. See
 - The Packager queue exports are present in the open account:
   `open-quilt-bio-PackagerQueueArn` and `open-quilt-bio-PackagerQueueUrl`, both
   from stack `open-quilt-bio` in `us-east-1`. Write-back has a destination when
-  it is enabled; it stays disabled for the contract reason below.
+  it is enabled; it stays disabled for the reason below.
 - `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True`
   with `default_workflow: occurrence`. Unlike `quilt-ernest-staging`, this
-  registry validates every write, which is why `writeBack=false` is not merely
-  the safe default here but the only correct setting until the contract work in
-  [#16](https://github.com/quiltdata/auto-checker/issues/16) lands.
+  registry validates every write. The payload itself is not the obstacle — 0.3.0
+  already stopped sending package metadata, and absent metadata preserves the
+  parent's, which validates. What keeps `writeBack=false` is that the Packager's
+  stamping behaviour on a queue-requested write is unverified, and the contract
+  work in [#16](https://github.com/quiltdata/auto-checker/issues/16) has not
+  landed.
 - `check-commit check "quilt+s3://protology#package=occurrence/spec"` runs
   against the open account from a developer machine: `PASS` at `d2b7cf60a91a`,
   regime `current`, 12 checks.

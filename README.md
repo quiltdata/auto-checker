@@ -42,7 +42,7 @@ You need:
 
 The auto-checker stack must run in the same account and region as the Quilt stack whose Packager queue it uses.
 
-A notify-only deployment needs neither the Packager queue exports nor write access. With `writeBack=false` the stack does not import the exports and grants the Lambda no `s3:PutObject` or `sqs:SendMessage`, so it synths and deploys against a Quilt stack that does not export a Packager queue at all.
+A notify-only deployment needs neither the Packager queue exports nor write access. With `writeBack=false` the stack does not import the exports and grants the Lambda no `s3:PutObject` or `sqs:SendMessage`, so it deploys against a Quilt stack that does not export a Packager queue at all. (A missing export is a deployment failure, not a synth failure: `Fn::ImportValue` is emitted unresolved and CloudFormation reports `No export named ... found`.)
 
 ### Deployment context: the `occurrence` corpus
 
@@ -224,7 +224,7 @@ To check and alert without writing responses, deploy with:
 (cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
 ```
 
-Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. It is also the only mode that works against a registry whose workflow validation the write-back payload does not yet satisfy: the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, rather than granting write access the Lambda cannot legally use.
+Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
 
 Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision and raises `SelfApplicationFailuresAlarm` rather than passing silently. Confirm that alarm is subscribed before enabling write-back.
 
