@@ -84,6 +84,18 @@ corpus lives. See
 - The deployment itself. Nothing in this release has been applied to the open
   account, and `FindingsTopicArn` has no subscriber yet.
 
+### Not addressed here
+
+- The pre-existing `check-commit` deployment in `712023778557`/`us-east-1`,
+  `UPDATE_COMPLETE` and last updated 2026-08-20, still watching
+  `quilt-ernest-staging` against the `quilt-staging` Packager queue. Both that
+  stack and the Quilt stack it depends on are live. This release retargets the
+  checked-in defaults, not that deployment, so after it lands the two coexist:
+  one checking the pre-migration registry, one checking `protology`. Retiring
+  the staging deployment is a separate decision, and
+  [#13](https://github.com/quiltdata/auto-checker/issues/13) is where the
+  registry side of it belongs.
+
 ### Retained deliberately
 
 - `backtest/expectations.yaml` keeps `registry: s3://quilt-ernest-staging` and
@@ -92,11 +104,16 @@ corpus lives. See
   discard the adjudications the corpus records (`spec:issues/closed/030`,
   [#6](https://github.com/quiltdata/auto-checker/issues/6)) rather than move
   them. It is the only corpus that exercises the pre-migration checks, and it is
-  reachable only while that registry stays live.
-- The hardcoded stack ID `check-commit` in `cdk/app.py`. A single deployment does
-  not need it parameterized; running a `quilt-ernest-staging` deployment
-  alongside this one does, and that is
-  [#9](https://github.com/quiltdata/auto-checker/issues/9).
+  reachable only while that registry stays live — which, verified against the
+  staging account, it is: the pointers and the pinned manifest are both present
+  and the full 166-revision backtest passes. Note the bucket is in `us-west-1`,
+  not the `us-east-1` the rest of that account's stacks use.
+- The hardcoded stack ID `check-commit` in `cdk/app.py`. It is not a prerequisite
+  here. [#9](https://github.com/quiltdata/auto-checker/issues/9) is a collision
+  within one account and region, and the pre-existing `check-commit` deployment
+  is in `712023778557` while this one targets `867344438354`. Two live
+  deployments of the same stack ID in different accounts is not a conflict; a
+  second prefix in the open account would be.
 
 ## [0.3.0] - 2026-09-10
 
