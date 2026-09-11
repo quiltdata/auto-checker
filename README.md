@@ -323,7 +323,7 @@ check-commit backtest --expectations backtest/expectations.yaml
 
 Each corpus records its own `registry`, and the two are not in the same account: the current corpus reads `s3://protology` in the open account, and the pre-migration corpus reads `s3://quilt-ernest-staging`, which the retarget leaves in place as the only reachable home for those adjudications. Both need registry read credentials, so they run locally or pre-deploy rather than in CI, and the current-regime gate is the one that must pass before a deployment to the open account.
 
-A stale local view cache can serve the old registry after a retarget. `check-commit` caches under `~/.cache/check-commit` keyed by bucket and package, so the retarget itself is safe, but clear it if a local run disagrees with the catalog.
+A retarget cannot serve stale views from the old registry. `check-commit` namespaces its cache by bucket and package under `~/.cache/check-commit`, and fetches the revision list live on every run, so pointing at a different registry reads a different cache and re-resolves the history.
 
 ## Development
 

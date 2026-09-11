@@ -29,6 +29,8 @@ from constructs import Construct
 # Lambda rejects a mapping where the queue would release a message while the
 # function is still working on it.
 CHECKER_TIMEOUT = Duration.minutes(10)
+# AWS's recommended ratio of queue visibility timeout to function timeout.
+VISIBILITY_RETRY_FACTOR = 6
 
 
 class CheckCommitStack(cdk.Stack):
@@ -59,13 +61,21 @@ class CheckCommitStack(cdk.Stack):
 
         # -- ingress: default-bus rule -> SQS (04 §3, §6) --------------------
         dlq = sqs.Queue(self, "DLQ", retention_period=Duration.days(14))
-        # Lambda refuses an event source mapping whose queue visibility timeout
-        # is below the function timeout, so this must stay >= CHECKER_TIMEOUT.
-        # One minute of margin covers the poller's own overhead.
+        # Six times the function timeout, per AWS's SQS/Lambda retry guidance.
+        # Lambda's hard requirement is only >= CHECKER_TIMEOUT, but clearing the
+        # minimum is not enough here: reserved_concurrent_executions=1 means a
+        # backlog leaves messages received-but-throttled, and if visibility
+        # expires while they wait, they are redelivered and their receive count
+        # climbs toward max_receive_count on throttling alone. That would
+        # dead-letter sound events during a burst. The cost of the wider window
+        # is that a genuinely poisonous message takes 3 x 60 min to reach the
+        # DLQ, which is acceptable for an asynchronous findings pipeline.
         queue = sqs.Queue(
             self,
             "Events",
-            visibility_timeout=CHECKER_TIMEOUT.plus(Duration.minutes(1)),
+            visibility_timeout=Duration.seconds(
+                CHECKER_TIMEOUT.to_seconds() * VISIBILITY_RETRY_FACTOR
+            ),
             dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
         )
         events.Rule(

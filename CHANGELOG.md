@@ -99,14 +99,16 @@ corpus lives. See
 ### Deployed
 
 - `check-commit` in `867344438354`/`us-east-1`, notify-only, against
-  `s3://protology` and the `occurrence/` prefix. Verified end to end:
+  `s3://protology` and the `occurrence/` prefix.
   - The checker runs in Lambda and logs
     `{"action": "checked", "detail": "occurrence/spec@d2b7cf60a91a PASS"}` — the
     policy loads from the bundled asset, the read grants reach `protology`, and
     `quilt3` works with `HOME=/tmp`.
   - The ingress path delivers. An `occurrence/spec` `package-revision` event on
     the default bus passed the rule's `occurrence/` prefix filter, went through
-    SQS, and produced a `checked` outcome in the log.
+    SQS, and produced a `checked` outcome in the log. The event was injected
+    with `PutEvents`, not produced by a write to the corpus — see the
+    outstanding criterion below.
   - The open Quilt stack does emit these events on the default bus, which was
     previously the unverified assumption behind the rule. `open-quilt-bio` runs
     its own `BenchlingPackageRevisionRule` on the same bus with the same
@@ -115,6 +117,15 @@ corpus lives. See
   - `FindingsTopicArn` has a confirmed email subscription.
   - The `CheckCommit` namespace is receiving `RevisionsChecked` and `Defects`.
     Both queues are empty and the DLQ has never held a message.
+
+### Outstanding
+
+- No `checked` outcome from an organically written revision. #17 asks for the
+  deployed rule to consume an event emitted by a real `occurrence/*` write, and
+  that has not happened. The two halves are verified separately — the producer
+  emits on the default bus, and the consumer processes an event placed on it —
+  but not joined, so this release does not claim the deployment is verified end
+  to end and #17 should stay open until a real write lands.
 
 ### Removed
 
@@ -144,6 +155,11 @@ corpus lives. See
   staging account, it is: the pointers and the pinned manifest are both present
   and the full 166-revision backtest passes. Note the bucket is in `us-west-1`,
   not the `us-east-1` the rest of that account's stacks use.
+
+  A retarget cannot serve stale views from the old registry, contrary to the note
+  in [#17](https://github.com/quiltdata/auto-checker/issues/17): the cache is
+  namespaced by bucket and the revision list is fetched live, so a different
+  registry means a different cache and a re-resolved history.
 - The hardcoded stack ID `check-commit` in `cdk/app.py`.
   [#9](https://github.com/quiltdata/auto-checker/issues/9) is a collision within
   one account and region, and with the staging deployment deleted there is one
