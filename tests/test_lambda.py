@@ -245,6 +245,17 @@ def test_a_foreign_turn_is_not_mistaken_for_ours(wired):
     assert out.action == "checked"
 
 
+def test_our_turn_shape_alone_is_not_enough(wired):
+    """§5 makes the contributor label navigational, so the turn name is only
+    one signal. Without the commit message we ask the Packager for, the
+    revision is checked like anyone else's."""
+    h, views = wired
+    _own_revision(views)
+    views["b" * 64].message = "someone else's commit; expected entry-count delta +1"
+    out = h.handle_detail(detail("b" * 64))
+    assert out.action == "checked"
+
+
 def test_sqs_batch_reports_bad_records(wired):
     h, _ = wired
     event = {"Records": [

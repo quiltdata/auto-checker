@@ -94,9 +94,16 @@ class Handler:
         """Did this checker write the revision?
 
         Package metadata no longer carries revision attribution — §3 forbids
-        it and the registered schema rejects it — so the signal is the shape of
-        the write: exactly one added entry, and that entry is one of our turns.
-        Nothing else in the diff, because that is all we ever write.
+        it and the registered schema rejects it — so the signal is the write
+        itself: exactly one added entry, nothing removed or changed (that is
+        all we ever write), the entry is one of our turns, and the commit
+        message is the one we ask the Packager for.
+
+        Both remaining signals are things any package writer could imitate;
+        §5 leaves the contributor label navigational on purpose. Misrouting
+        costs a response, not a wrong verdict — a revision taken for ours is
+        verified rather than trusted, and a failure raises
+        SelfApplicationFailures.
         """
         added, removed, changed = cur.diff(prev)
         return (
@@ -104,6 +111,7 @@ class Handler:
             and not removed
             and not changed
             and self.policy.is_own_turn(added[0])
+            and self.policy.authored_revision(cur.message)
         )
 
     # -- the two routes -----------------------------------------------------

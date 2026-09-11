@@ -179,6 +179,23 @@ def test_bad_issue_status_flagged(policy):
     ]
 
 
+def test_status_grammar_is_case_sensitive(policy):
+    """§5 says exactly `open | closed`. Grammar is literal; reading an issue's
+    state stays case-tolerant, so a miscased closure still clears its route."""
+    prev = rev("a" * 64, BASE, meta={**META, FOLDER: "spec"})
+    cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")},
+              meta={**META, FOLDER: "spec"})
+    body = (
+        b"# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n- **Status:** Closed\n"
+        b"- **Closed:** o\n- **Closed-By:** o\n"
+    )
+    ctx = _readme_ctx(policy, body)
+    assert kinds(checks.check_issue_readme(prev, cur, ctx)) == [("issue-readme", "bad-status")]
+    assert kinds(checks.check_issue_routes(prev, cur, ctx)) == [
+        ("issue-routes", "route-survives-closure")
+    ]
+
+
 def test_conforming_readme_passes(policy):
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta=META)
@@ -249,6 +266,22 @@ def test_readme_is_the_one_unnumbered_entry(ctx):
     other = "issues/008-new-loop"
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{other}/README.md": (10, "hn")}, meta=META)
+    assert checks.check_turn_form(prev, cur, ctx) == []
+
+
+def test_malformed_issue_folder_flagged(ctx):
+    """A folder that is not NNN-slug cannot carry a route key, so nothing else
+    would notice it."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, "issues/12-short/README.md": (10, "hn")}, meta=META)
+    fs = checks.check_turn_form(prev, cur, ctx)
+    assert kinds(fs) == [("turn-form", "malformed-issue-folder")]
+
+
+def test_legacy_closed_thread_is_not_a_malformed_folder(ctx):
+    """§9 keeps historical flat threads under issues/closed/ as they are."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, "issues/closed/041-gate.md": (10, "hn")}, meta=META)
     assert checks.check_turn_form(prev, cur, ctx) == []
 
 
@@ -359,6 +392,15 @@ def test_relocation_that_loses_entries_flagged(ctx):
     assert "9 entries left and only 1 arrived" in fs[0].detail
 
 
+def test_relocation_that_adds_nothing_at_all_flagged(ctx):
+    """The worst case of the same class: a claimed relocation that only deletes."""
+    prev = rev("a" * 64, {**BASE, **{p: (10, "hx") for p in RELOCATED}}, meta=META)
+    cur = rev("b" * 64, BASE, message=LOSS_MESSAGE, meta=META)
+    fs = checks.check_entry_count(prev, cur, ctx)
+    assert kinds(fs) == [("entry-count", "relocation-not-net-zero")]
+    assert "only 0 arrived" in fs[0].detail
+
+
 def test_honest_relocation_passes(ctx):
     moved = {**BASE}
     del moved[f"{FOLDER}/007.01-Owner-opening.md"]
@@ -427,6 +469,16 @@ def test_citation_form_example_is_not_a_citation(policy):
     assert checks.check_uris(prev, cur, ctx) == []
 
 
+def test_ellipsis_inside_a_real_path_buys_no_exemption(policy):
+    """Only a wholly elided bucket or package is a template. An ellipsis inside
+    a path is part of a real citation and must still be checked."""
+    text = "Evidence: quilt+s3://b#package=occurrence/theory&path=records/..."
+    prev, cur = _with_doc(text)
+    assert kinds(checks.check_pinned_citation(prev, cur, _doc_ctx(policy, text))) == [
+        ("pinned-citation", "unpinned-citation")
+    ]
+
+
 def test_same_package_uri_is_not_cross_package(policy):
     text = "See quilt+s3://b#package=occurrence/testpkg&path=README.md"
     prev, cur = _with_doc(text)
@@ -492,6 +544,16 @@ def test_registered_schema_drift_flagged_when_online(policy):
     ctx = FakeCtx(policy, objects={uri: json.dumps(stale).encode()}, online=True)
     assert kinds(checks.check_schema_drift(None, cur, ctx)) == [
         ("schema-drift", "registered-schema-drift")
+    ]
+
+
+def test_deleting_the_package_schema_flagged(policy):
+    """Drift by removal: nothing else covers this file's disappearance."""
+    prev = rev("a" * 64, {**BASE, SCHEMA_PATH: (len(VENDORED), "hs")}, meta=META)
+    cur = rev("b" * 64, BASE, meta=META)
+    ctx = FakeCtx(policy, contents={SCHEMA_PATH: VENDORED})
+    assert kinds(checks.check_schema_drift(prev, cur, ctx)) == [
+        ("schema-drift", "schema-removed")
     ]
 
 

@@ -331,19 +331,22 @@ def check_issue_readme(prev, cur, ctx) -> list[Finding]:
                         f"requires Opened, Originator, and Status",
                     )
                 )
-        status = (fields.get("Status") or "").lower()
-        if status and status not in ("open", "closed"):
+        # §5: "Status is exactly open | closed". Grammar is checked literally
+        # here; reading an issue's *state* elsewhere stays case-tolerant, since
+        # a badly-cased status still tells you the loop is shut.
+        raw_status = fields.get("Status")
+        if raw_status and raw_status not in ("open", "closed"):
             findings.append(
                 Finding(
                     check="issue-readme",
                     severity=DEFECT,
                     kind="bad-status",
                     paths=(path,),
-                    detail=f"issue Status is {fields['Status']!r}; §5 requires exactly "
+                    detail=f"issue Status is {raw_status!r}; §5 requires exactly "
                     f"open|closed",
                 )
             )
-        if status == "closed":
+        if (raw_status or "").lower() == "closed":
             absent = [f for f in ("Closed", "Closed-By") if f not in fields]
             if absent:
                 findings.append(
@@ -384,6 +387,21 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
     for path in added:
         folder = policy.issue_folder_of(path)
         if not folder:
+            # A path nested under issues/ whose own folder is not NNN-slug is
+            # an issue folder nobody can route to or cite. `issues/closed/` is
+            # the one exception: §9 keeps historical flat threads as they are.
+            parts = path.split("/")
+            if len(parts) > 2 and parts[0] == "issues" and parts[1] != "closed":
+                findings.append(
+                    Finding(
+                        check="turn-form",
+                        severity=DEFECT,
+                        kind="malformed-issue-folder",
+                        paths=(path,),
+                        detail=f"issues/{parts[1]} is not the NNN-slug form §5 requires "
+                        f"of an issue folder, so it cannot carry a route key",
+                    )
+                )
             continue
         base = posixpath.basename(path)
         if base == "README.md" or path != f"{folder}/{base}":
@@ -497,8 +515,12 @@ def check_entry_count(prev, cur, ctx) -> list[Finding]:
     # No explicit claim. A message asserting a relocation has claimed net zero:
     # "a nine-path relocation cannot yield a net -8 entries"
     # (spec:issues/closed/041 Incident 1).
+    # Scoped to loss: a relocation claim that removes more than it adds,
+    # including one that adds nothing at all. A net *gain* under a relocation
+    # claim is ordinarily "moved X, and also added Y", which §4 asks to be
+    # declared but which is not the evidence-losing class recorded above.
     added, removed, _ = cur.diff(prev)
-    if RELOCATION_RE.search(message) and added and removed and len(removed) > len(added):
+    if RELOCATION_RE.search(message) and removed and len(removed) > len(added):
         return [
             Finding(
                 check="entry-count",
@@ -622,7 +644,23 @@ def check_schema_drift(prev, cur, ctx) -> list[Finding]:
     except FileNotFoundError:
         raise FileNotFoundError(f"policy names a vendored schema that is missing: {pol.vendored_schema_path}")
 
-    if pol.package_schema_path and pol.package_schema_path in cur.entries:
+    if (
+        pol.package_schema_path
+        and prev is not None
+        and pol.package_schema_path in prev.entries
+        and pol.package_schema_path not in cur.entries
+    ):
+        findings.append(
+            Finding(
+                check="schema-drift",
+                severity=DEFECT,
+                kind="schema-removed",
+                paths=(pol.package_schema_path,),
+                detail=f"the package's copy of the registered schema was deleted; §2 "
+                f"makes the package's own record of its contract part of the contract",
+            )
+        )
+    elif pol.package_schema_path and pol.package_schema_path in cur.entries:
         in_package = _load_json(ctx.content(cur, pol.package_schema_path))
         if in_package is None:
             findings.append(
@@ -736,14 +774,26 @@ def _is_illustrative(uri: str) -> bool:
 
     Protocol documents show the citation form rather than a citation:
     `protocol/recruitment.md` carries `quilt+s3://...#package=...@<revision>
-    &path=...`. Such a template arrives here either with its parts elided as
-    `...` or truncated at the `@`, because QUILT_URI_RE stops at the `<`. It is
+    &path=...`. Such a template arrives here with whole components elided as
+    `...`, or truncated at the `@` because QUILT_URI_RE stops at the `<`. It is
     neither an unresolvable pin nor an unpinned citation, and reporting it as
-    either is noise. Deliberately narrow: two signals, both observed in the
-    corpus, so no plausible real URI is skipped.
+    either is noise.
+
+    Deliberately narrow. Only a wholly elided bucket or package counts, so an
+    ellipsis inside a real path — `&path=records/...` — does not buy an
+    exemption from either URI check.
     """
     body = uri[len("quilt+s3://"):].rstrip(".,;:")
-    return "..." in body or body.endswith("@")
+    if body.endswith("@"):
+        return True
+    bucket, _, frag = body.partition("#")
+    if bucket == "...":
+        return True
+    for part in frag.split("&"):
+        key, _, value = part.partition("=")
+        if key == "package" and value.partition("@")[0] == "...":
+            return True
+    return False
 
 
 def _parse_quilt_uri(uri: str):

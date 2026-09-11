@@ -144,17 +144,28 @@ class Policy:
         return f"t0-check-of-{tophash[:8]}"
 
     def is_own_turn(self, path: str) -> bool:
-        """True if `path` is a turn this checker composed.
+        """True if `path` has the shape of a turn this checker composed.
 
         Package metadata no longer carries revision attribution (§3), so the
-        checker recognizes its own writes by the shape of the turn it files:
-        one turn whose contributor label is ours and whose slug is our own.
+        checker recognizes its own writes by the turn it files: contributor
+        label ours, slug ours.
+
+        §5 makes a contributor label navigational and not provenance authority,
+        so this is a heuristic and not an authentication. `authored_revision`
+        adds the commit message we write as a second signal. Both are forgeable
+        by anyone who can write the package; the bounded consequence is that a
+        forged turn is verified offline and draws no response, never that
+        anything is trusted on its word.
         """
         parts = turn_parts(path.rpartition("/")[2])
         if parts is None:
             return False
         _, _, contributor, slug = parts
         return contributor == self.contributor and slug.startswith("t0-check-of-")
+
+    def authored_revision(self, message: str) -> bool:
+        """True if the commit message is the one this checker asks for."""
+        return bool(self.author) and (message or "").startswith(f"{self.author}: ")
 
     @classmethod
     def load(cls, path: pathlib.Path, prefix: str = "") -> "Policy":
