@@ -16,7 +16,7 @@ from . import __version__
 from .corpus import PackageHistory
 from .engine import Context, run
 from .model import DEFECT, KNOWN_UNRESOLVED
-from .policy import Policy, PolicyError
+from .policy import REGIMES, Policy, PolicyError
 
 URI_RE = re.compile(r"^quilt\+s3://(?P<bucket>[^#]+)#package=(?P<pkg>[^@&]+)(?:@(?P<hash>[^&]+))?")
 
@@ -54,7 +54,7 @@ def cmd_check(args) -> int:
     except PolicyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    ctx = Context(history, pairs, online=not args.offline, policy=pol)
+    ctx = Context(history, pairs, online=not args.offline, policy=pol, regime=args.regime)
     report = run(prev, cur, ctx)
 
     if args.json:
@@ -67,6 +67,7 @@ def cmd_check(args) -> int:
 def _print_report(report):
     print(f"check-commit {report.engine_version} — {report.package} @ {report.tophash[:12]}")
     print(f"  vs prev {report.prev_tophash[:12] if report.prev_tophash else '(none)'}")
+    print(f"  regime: {report.regime} ({len(report.checks_run)} checks)")
     print(f"  verdict: {report.verdict.upper()}")
     if report.error:
         print(report.error)
@@ -79,7 +80,7 @@ def _print_report(report):
 
 
 def cmd_compose(args) -> int:
-    """Preview the anaimail message a revision's findings would produce. No writes."""
+    """Preview the issue turn a revision's findings would produce. No writes."""
     from .compose import ComposeError, compose
 
     m = URI_RE.match(args.uri)
@@ -106,22 +107,22 @@ def cmd_compose(args) -> int:
     except PolicyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    ctx = Context(history, pairs, online=not args.offline, policy=pol)
+    ctx = Context(history, pairs, online=not args.offline, policy=pol, regime=args.regime)
     report = run(prev, cur, ctx)
     if report.error:
         print(report.error, file=sys.stderr)
         return 2
     if not report.findings:
-        print(f"verdict: PASS — no message would be written for {report.tophash[:12]}")
+        print(f"verdict: PASS — no turn would be written for {report.tophash[:12]}")
         return 0
 
     try:
-        msg = compose(report, cur, prev, pol)
+        turn = compose(report, cur, prev, pol)
     except ComposeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"--- would write: {msg.logical_key}\n")
-    print(msg.text)
+    print(f"--- would write: {turn.logical_key}\n")
+    print(turn.text)
     return report.exit_code
 
 
@@ -141,14 +142,20 @@ def cmd_backtest(args) -> int:
         print(f"error: pin {pin[:12]} not found in revision list", file=sys.stderr)
         return 2
     pairs = pairs[: upto[0] + 1]
-    print(f"backtest: {package}, {len(pairs)} revisions up to pin {pin[:12]}")
 
     try:
         pol = Policy.for_package(package, override=args.policy)
     except PolicyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    ctx = Context(history, pairs, online=args.online, policy=pol)
+    # A corpus declares the regime it belongs to: the pre-migration corpus is
+    # audited against the contract it was written under, not today's.
+    regime = args.regime or exp.get("regime") or pol.regime
+    print(
+        f"backtest: {package}, {len(pairs)} revisions up to pin {pin[:12]}, "
+        f"regime {regime}"
+    )
+    ctx = Context(history, pairs, online=args.online, policy=pol, regime=regime)
     by_hash: dict[str, list] = {}
     counts = collections.Counter()
     prev = None
@@ -182,15 +189,36 @@ def cmd_backtest(args) -> int:
         got = sorted({f"{f.check}/{f.kind}" for f in hits})
         print(f"  [{status}] must_flag {prefix:<10} ({spec.get('class', '')}): {got}")
 
+    for spec in exp.get("must_not_flag", []):
+        prefix = spec["hash"]
+        wanted = set(spec.get("checks", []))
+        hits = [
+            f
+            for f in findings_for(prefix)
+            if f.severity == DEFECT and (not wanted or f.check in wanted)
+        ]
+        if hits:
+            got = sorted({f"{f.check}/{f.kind}" for f in hits})
+            failures.append(f"must_not_flag {prefix}: unexpected defect(s) {got}")
+        print(
+            f"  [{'FAIL' if hits else 'PASS'}] must_not_flag {prefix:<10} "
+            f"({spec.get('class', 'clean')})"
+        )
+
     for spec in exp.get("known_unresolved", []):
         prefix, needle = spec["hash"], spec["paths_contain"]
+        # The check whose adjudication is being asserted. Defaults to any
+        # check, so a corpus in a different regime names its own.
+        wanted = set(spec.get("checks", []))
         fs = [f for f in findings_for(prefix) if any(needle in p for p in f.paths)]
+        if wanted:
+            fs = [f for f in fs if f.check in wanted]
         ku = [f for f in fs if f.severity == KNOWN_UNRESOLVED]
-        bad = [f for f in fs if f.severity == DEFECT and f.check == "filename-form"]
+        bad = [f for f in fs if f.severity == DEFECT]
         ok = bool(ku) and not bad
         if not ok:
             failures.append(
-                f"known_unresolved {prefix}: expected known-unresolved collision on "
+                f"known_unresolved {prefix}: expected a known-unresolved finding on "
                 f"{needle}, got ku={len(ku)} defects={len(bad)}"
             )
         print(f"  [{'PASS' if ok else 'FAIL'}] known_unresolved {prefix} ({needle})")
@@ -227,24 +255,33 @@ def main(argv=None) -> int:
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("check", help="run the six T0 checks on one package revision")
+    def regime_arg(parser):
+        parser.add_argument(
+            "--regime",
+            choices=REGIMES,
+            help="contract to check against (default: the policy's own regime)",
+        )
+
+    p = sub.add_parser("check", help="run the T0 checks on one package revision")
     p.add_argument("uri", help="quilt+s3://<bucket>#package=<name>[@tophash]")
     p.add_argument("--offline", action="store_true", help="skip foreign-package URI resolution")
     p.add_argument("--json", action="store_true", help="emit the JSON report")
     p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
+    regime_arg(p)
     p.set_defaults(fn=cmd_check)
 
     p = sub.add_parser(
-        "compose", help="preview the anaimail message a revision's findings would produce (no writes)"
+        "compose", help="preview the issue turn a revision's findings would produce (no writes)"
     )
     p.add_argument("uri", help="quilt+s3://<bucket>#package=<name>[@tophash]")
     p.add_argument("--offline", action="store_true", help="skip foreign-package URI resolution")
     p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
+    regime_arg(p)
     p.set_defaults(fn=cmd_compose)
 
-    p = sub.add_parser("backtest", help="replay the acceptance corpus against expectations")
+    p = sub.add_parser("backtest", help="replay an acceptance corpus against expectations")
     p.add_argument(
         "--expectations",
         default=str(pathlib.Path(__file__).resolve().parents[2] / "backtest" / "expectations.yaml"),
@@ -253,6 +290,7 @@ def main(argv=None) -> int:
     p.add_argument("--report", help="write full findings JSON to this path")
     p.add_argument("--cache", help="cache directory (default ~/.cache/check-commit)")
     p.add_argument("--policy", help="policy YAML (default: auto-selected by package prefix)")
+    regime_arg(p)
     p.set_defaults(fn=cmd_backtest)
 
     args = parser.parse_args(argv)

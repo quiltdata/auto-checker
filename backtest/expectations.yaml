@@ -1,13 +1,23 @@
-# Acceptance corpus for check-commit (03 §1; 04 §4/§8).
+# Pre-migration acceptance corpus for check-commit.
+#
+# This corpus predates the 2026-08-13 metadata migration and the §5 folder
+# model. It is replayed against the `pre-migration` regime deliberately: every
+# expectation below turns on metadata fields the registered `occurrence`
+# schema now forbids, and on the message-folder filename grammar §5 retired.
+# Auditing it against today's contract would be anachronistic, and dropping it
+# would lose the only corpus that exercises those checks at full strength.
+#
+# The current-regime corpus is backtest/expectations-current.yaml.
 #
 # The pin is the head at audit time. Revisions after it exist but are not part
 # of acceptance. Hash keys are unique prefixes of revision top hashes.
 #
-# Where 03 §1 cites a *fix* revision as evidence of a defect (the two
+# Where a *fix* revision is cited as evidence of a defect (the two
 # claimed-but-not-performed remediations, the two issue-path restorations),
 # the defective revision the checker must flag is listed here, with the cited
 # evidence revision recorded in `evidence`.
 
+regime: pre-migration
 package: occurrence/probability
 registry: s3://quilt-ernest-staging
 pin: 7d74cc22a0547ec195a21e1da99fde8e3f2cb13ae15a8d8a4c27a79ce64cdfe4
@@ -19,9 +29,9 @@ must_flag:
   ed340d21: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
   ce49ce8c: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence}
   # the fifth delta/set incident: 67651f1c claimed the closed/029 append and
-  # omitted it; 142964c8 (cited in 03 §1) is the remediation recording that.
-  # The prose claim is unparseable deterministically; the same revision's
-  # stale inherited `changes` field carries the defect.
+  # omitted it; 142964c8 is the remediation recording that. The prose claim is
+  # unparseable deterministically; the same revision's stale inherited
+  # `changes` field carries the defect.
   67651f1c: {checks: [delta-set, metadata-hygiene], class: delta-set-divergence, evidence: "142964c8"}
 
   # -- claimed-but-not-performed: the remediations carry the stale claims --
@@ -41,23 +51,31 @@ must_flag:
     checks: [filename-form]
     class: counter-collision
 
-  # -- issue-path resurrections (fixes cited in 03: fceae62a, b95488f3) --
+  # -- issue-path resurrections (fixes cited as evidence) --
   f5e80813: {checks: [issue-paths], class: resurrection, evidence: b95488f3}
   015dfb1c: {checks: [issue-paths], class: resurrection, evidence: fceae62a}
 
 # Required false negatives: adjudicated counter collisions (issues/closed/030
 # for the first two, auto-checker#6 for the rest) must surface as
-# known-unresolved, never as filename-form defects.
+# known-unresolved, never as filename-form defects. `checks` scopes the
+# assertion to the check being adjudicated, so an unrelated defect on the same
+# path in the same revision does not read as a failure.
 known_unresolved:
   - hash: e2d812c8  # 03.05P lands beside 03.05M
+    checks: [filename-form]
     paths_contain: "03-conditional-kernel/03.05"
   - hash: e73238ad  # 02.21K lands beside 02.21P
+    checks: [filename-form]
     paths_contain: "02-measure-selection/02.21"
   - hash: f446818c  # 30M lands beside 30P
+    checks: [filename-form]
     paths_contain: "01-backstory/30"
   - hash: e044abd2  # 21CC lands beside 21M
+    checks: [filename-form]
     paths_contain: "01-backstory/21"
   - hash: e67a38df  # 02.07CC lands beside 02.07M
+    checks: [filename-form]
     paths_contain: "02-measure-selection/02.07"
   - hash: 20b7583a  # 02.23P lands beside 02.23M
+    checks: [filename-form]
     paths_contain: "02-measure-selection/02.23"

@@ -1,7 +1,8 @@
 """check-commit — deterministic tier-0 checker for governed Quilt packages.
 
-Spec: proj/260810-auto-checker 04-mvp-tier-0-design.md §4 (build spec: 03 §1).
-No model, no inference. Two revisions in, findings out.
+Enforcement target: `spec:protocol/occurrence.md` (current model) and the
+registered `occurrence` workflow schema. No model, no inference. Two revisions
+in, findings out.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -26,8 +26,16 @@ class RevisionView:
     tophash: str
     pointer: str | None
     message: str
-    meta: dict[str, Any]
+    meta: dict[str, Any]  # user_meta: the package metadata the schema governs
     entries: dict[str, Entry]
+    # The manifest's workflow stamp, e.g. {"id": "occurrence", "schemas": {...}}.
+    # None means the revision was written without a workflow, so its metadata
+    # was never validated against the registered schema.
+    workflow: dict[str, Any] | None = None
+
+    @property
+    def workflow_id(self) -> str | None:
+        return (self.workflow or {}).get("id")
 
     def diff(self, prev: "RevisionView | None"):
         """Return (added, removed, changed) logical keys vs prev."""
@@ -68,6 +76,7 @@ class Report:
     pointer: str | None
     prev_tophash: str | None
     engine_version: str
+    regime: str = ""  # which contract the checks were run against
     findings: list[Finding] = dataclasses.field(default_factory=list)
     checks_run: list[str] = dataclasses.field(default_factory=list)
     notes: list[str] = dataclasses.field(default_factory=list)
@@ -92,13 +101,14 @@ class Report:
 
     def to_dict(self):
         return {
-            "schema": "check-commit-report/0",
+            "schema": "check-commit-report/1",
             "engine_version": self.engine_version,
             "package": self.package,
             "registry": self.registry,
             "tophash": self.tophash,
             "pointer": self.pointer,
             "prev_tophash": self.prev_tophash,
+            "regime": self.regime,
             "checks_run": self.checks_run,
             "verdict": self.verdict,
             "findings": [f.to_dict() for f in self.sorted_findings()],

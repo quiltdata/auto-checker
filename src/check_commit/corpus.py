@@ -19,6 +19,10 @@ DEFAULT_CACHE = pathlib.Path(
     os.environ.get("CHECK_COMMIT_CACHE", pathlib.Path.home() / ".cache" / "check-commit")
 )
 
+# Bump whenever a cached view gains a field, so stale entries are re-fetched
+# rather than silently read back with the new field missing.
+VIEW_CACHE_SCHEMA = 2
+
 
 class PackageHistory:
     def __init__(self, package: str, bucket: str, cache_dir: pathlib.Path | None = None):
@@ -51,16 +55,21 @@ class PackageHistory:
         cached = self.cache / "views" / f"{tophash}.json"
         if cached.exists():
             d = json.loads(cached.read_text())
-            return RevisionView(
-                tophash=tophash,
-                pointer=pointer or d.get("pointer"),
-                message=d.get("message") or "",
-                meta=d.get("meta") or {},
-                entries={
-                    k: Entry(size=v.get("size"), hash=v.get("hash"), physical_key=v.get("pk"))
-                    for k, v in d["entries"].items()
-                },
-            )
+            # A view cached by an older engine has no workflow stamp recorded.
+            # Treating that absence as "written without a workflow" would be a
+            # false positive, so an old cache entry is a miss, not a hit.
+            if d.get("schema") == VIEW_CACHE_SCHEMA:
+                return RevisionView(
+                    tophash=tophash,
+                    pointer=pointer or d.get("pointer"),
+                    message=d.get("message") or "",
+                    meta=d.get("meta") or {},
+                    entries={
+                        k: Entry(size=v.get("size"), hash=v.get("hash"), physical_key=v.get("pk"))
+                        for k, v in d["entries"].items()
+                    },
+                    workflow=d.get("workflow"),
+                )
 
         import quilt3
 
@@ -73,19 +82,24 @@ class PackageHistory:
                 hash=h.get("value") if isinstance(h, dict) else h,
                 physical_key=str(entry.physical_key),
             )
+        manifest_meta = pkg._meta or {}
+        workflow = manifest_meta.get("workflow")
         view = RevisionView(
             tophash=tophash,
             pointer=pointer,
-            message=(pkg._meta or {}).get("message") or "",
+            message=manifest_meta.get("message") or "",
             meta=pkg.meta or {},
             entries=entries,
+            workflow=workflow if isinstance(workflow, dict) else None,
         )
         cached.write_text(
             json.dumps(
                 {
+                    "schema": VIEW_CACHE_SCHEMA,
                     "pointer": pointer,
                     "message": view.message,
                     "meta": view.meta,
+                    "workflow": view.workflow,
                     "entries": {
                         k: {"size": e.size, "hash": e.hash, "pk": e.physical_key}
                         for k, e in entries.items()
@@ -109,17 +123,21 @@ class PackageHistory:
         cached = self.cache / "content" / key
         if cached.exists():
             return cached.read_bytes()
-        data = self._fetch(entry)
+        data = self.read_s3_uri(entry.physical_key) if entry.physical_key else None
         if data is not None:
             cached.write_bytes(data)
         return data
 
-    def _fetch(self, entry: Entry) -> bytes | None:
-        if not entry.physical_key:
-            return None
+    def read_s3_uri(self, uri: str) -> bytes | None:
+        """Bytes of an `s3://bucket/key[?versionId=...]` object, or None.
+
+        Also serves objects outside any package: the registered workflow schema
+        under `.quilt/workflows/` is named, version included, by the manifest's
+        own workflow stamp.
+        """
         from urllib.parse import parse_qs, urlparse
 
-        u = urlparse(entry.physical_key)
+        u = urlparse(uri)
         if u.scheme != "s3":
             return None
         params = {}
