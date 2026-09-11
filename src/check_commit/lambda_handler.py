@@ -1,19 +1,18 @@
-"""Lambda adapter around the check-commit engine (04 §5–§6).
+"""Lambda adapter around the check-commit engine.
 
 The engine stays the deterministic core; this module is the deployment glue:
-consume package-revision events (EventBridge -> SQS), route self-authored
-revisions to self-application, run the checks on everything else, and act on
-the verdict — notify always, write back only when enabled and safe.
+consume package-revision events (EventBridge -> SQS), route our own revisions
+to self-application, run the checks on everything else, and act on the
+verdict — notify always, write back only when enabled and safe.
 
 Environment:
   PACKAGE_PREFIX      e.g. "occurrence" (selects policy; sanity-checks events)
   SNS_TOPIC_ARN       findings/alerts topic
   PACKAGER_QUEUE_URL  the Quilt stack's Packager queue (write-back)
-  WRITE_BACK          "true" to write anaimail responses; anything else = notify-only
+  WRITE_BACK          "true" to write response turns; anything else = notify-only
   METRIC_NAMESPACE    default "CheckCommit"
 
-Write-back stays off until the cast-table entry exists in the governed
-package (04 §10.2); notify-only is the safe default.
+Notify-only is the safe default.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import re
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
@@ -86,11 +84,35 @@ class Handler:
         cur = history.view(pairs[index][1], pointer=pairs[index][0])
         prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
 
-        if (cur.meta or {}).get("author") == self.policy.author:
+        if self._is_own_revision(prev, cur):
             return self._self_apply(history, pairs, prev, cur, handle)
 
         is_head = index == len(pairs) - 1
         return self._check(history, pairs, prev, cur, handle, bucket, is_head)
+
+    def _is_own_revision(self, prev, cur) -> bool:
+        """Did this checker write the revision?
+
+        Package metadata no longer carries revision attribution — §3 forbids
+        it and the registered schema rejects it — so the signal is the write
+        itself: exactly one added entry, nothing removed or changed (that is
+        all we ever write), the entry is one of our turns, and the commit
+        message is the one we ask the Packager for.
+
+        Both remaining signals are things any package writer could imitate;
+        §5 leaves the contributor label navigational on purpose. Misrouting
+        costs a response, not a wrong verdict — a revision taken for ours is
+        verified rather than trusted, and a failure raises
+        SelfApplicationFailures.
+        """
+        added, removed, changed = cur.diff(prev)
+        return (
+            len(added) == 1
+            and not removed
+            and not changed
+            and self.policy.is_own_turn(added[0])
+            and self.policy.authored_revision(cur.message)
+        )
 
     # -- the two routes -----------------------------------------------------
 
@@ -133,40 +155,39 @@ class Handler:
         return self._write_back(report, cur, prev, handle, bucket)
 
     def _write_back(self, report, cur, prev, handle, bucket) -> Outcome:
-        slug = f"t0-check-of-{report.tophash[:8]}"
+        slug = self.policy.response_slug(report.tophash)
         if any(slug in k for k in cur.entries):
             return self._log(Outcome("skipped", f"response for {slug} already filed", report))
         try:
-            msg = compose(report, cur, prev, self.policy)
+            turn = compose(report, cur, prev, self.policy)
         except ComposeError as exc:
             self._notify(f"[check-commit] compose failed for {handle}", str(exc))
             return self._log(Outcome("error", f"compose: {exc}", report))
 
-        key = f"{handle}/{msg.logical_key}"
+        key = f"{handle}/{turn.logical_key}"
         try:
             self.s3.head_object(Bucket=bucket, Key=key)
             # staged by an earlier delivery of this event; packaging already requested
             return self._log(Outcome("skipped", f"response already staged at {key}", report))
         except Exception:
             pass
-        self.s3.put_object(Bucket=bucket, Key=key, Body=msg.text.encode())
-        delta = f"SET CONTAINS EXACTLY: {msg.logical_key}. T0 findings for {report.tophash[:12]}."
+        self.s3.put_object(Bucket=bucket, Key=key, Body=turn.text.encode())
         self.sqs.send_message(
             QueueUrl=self.packager_queue_url,
             MessageBody=json.dumps(
                 {
                     "source_prefix": f"s3://{bucket}/{handle}/",
                     "package_name": handle,
-                    "commit_message": f"{self.policy.author}: T0 check of {report.tophash[:12]} — "
-                    f"{len(report.findings)} finding(s). delta: {msg.logical_key}",
-                    # full metadata for our own post, every field true of THIS
-                    # patch; set_meta replaces wholesale, so nothing inherited
-                    "metadata": {
-                        "author": self.policy.author,
-                        "delta": delta,
-                        "messages_added": [msg.logical_key],
-                        "changes": [],
-                    },
+                    # Rationale belongs in the commit message (§3), and the only
+                    # entry-count claim we can make is +1: one new turn.
+                    "commit_message": f"{self.policy.author}: T0 check of "
+                    f"{report.tophash[:12]} — {len(report.findings)} finding(s) filed at "
+                    f"{turn.logical_key}; expected entry-count delta +1",
+                    # No `metadata` key. Absent package metadata preserves the
+                    # parent's, so its related_packages/status carry forward
+                    # already-valid; present metadata would replace it wholesale
+                    # and every field we used to send is now forbidden by the
+                    # registered schema's additionalProperties: false.
                 }
             ),
         )
@@ -174,18 +195,18 @@ class Handler:
         return self._log(Outcome("checked", f"wrote {key} and requested packaging", report))
 
     def _self_apply(self, history, pairs, prev, cur, handle) -> Outcome:
-        """Our own Packager-cut revision came back: verify, never write."""
+        """Our own Packager-cut revision came back: verify, never write.
+
+        This is also how the open question about the Packager gets answered.
+        The queue contract carries no workflow field, so whether our write is
+        stamped `workflow: occurrence` depends on the Packager honouring the
+        bucket's `default_workflow`. If it does not, the `workflow-stamp` check
+        fails here, on our own revision, and raises SelfApplicationFailures.
+        """
         added, removed, changed = cur.diff(prev)
-        label = self.policy.cast_label
-        ok_shape = (
-            len(added) == 1
-            and not removed
-            and not changed
-            and re.search(rf"\.\d{{2}}{label}-", added[0])
-        )
         ctx = Context(history, pairs, online=False, policy=self.policy)
         report = run(prev, cur, ctx)
-        if not ok_shape or report.verdict not in ("pass", "known-unresolved"):
+        if report.verdict not in ("pass", "known-unresolved"):
             self._notify(
                 f"[check-commit] SELF-APPLICATION FAILED on {handle}@{cur.tophash[:12]}",
                 f"diff added={added} removed={removed} changed={changed}\n{report.to_json()}",

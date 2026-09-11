@@ -1,6 +1,6 @@
 # Auto-checker
 
-Auto-checker continuously checks new Quilt package revisions against the policy for their package prefix. It receives Quilt `package-revision` events, runs deterministic Tier 0 checks, reports defects, and writes an anaimail response back to the package when findings require one.
+Auto-checker continuously checks new Quilt package revisions against the policy for their package prefix. It receives Quilt `package-revision` events, runs deterministic Tier 0 checks, reports defects, and files an issue turn back into the package when findings require one.
 
 Use this repository to put a package prefix such as `occurrence/*` or `myprefix/*` under automatic policy checking.
 
@@ -14,12 +14,21 @@ Quilt package revision
   -> SQS queue
   -> checker Lambda
   -> SNS findings and CloudWatch metrics
-  -> anaimail response through the Quilt Packager, when needed
+  -> issue turn through the Quilt Packager, when needed
 ```
 
 The package prefix controls both which revision events reach the checker and which policy file it loads. For example, a deployment with `packagePrefix=occurrence` checks `occurrence/*` packages with `src/check_commit/policies/occurrence.yaml`.
 
 A missing policy is an engine error, never a silent pass.
+
+### Regimes
+
+A governed corpus outlives the contract it was written under. Each policy declares a `regime`, and each check declares which regimes authorize it, so the engine never applies a retired rule to a current write or a current rule to a live package that has not migrated.
+
+- `current` — the folder model of `spec:protocol/occurrence.md` §§2–8: three-field package metadata with an optional bounded routing namespace, stable issue folders, immutable turns, closure in place, and revision-pinned cross-package citation.
+- `pre-migration` — the retired flat-issue and message-folder model. Its checks read metadata fields the registered schema now forbids, so they are sound only against the historical corpus (§9).
+
+`--regime` overrides the policy's own choice, which is how the historical backtest corpus is replayed against the contract it was actually written under.
 
 ## Prerequisites
 
@@ -44,11 +53,21 @@ cp src/check_commit/policies/occurrence.yaml src/check_commit/policies/myprefix.
 Edit the new file to describe conventions already established by the governed packages. The policy schema is `src/check_commit/policies/policy.schema.json`.
 
 ```yaml
-# Registered checker identity used in revision metadata.
+# Which contract to check against: current | pre-migration.
+regime: current
+
+# Writer named in the commit message. Never written to package metadata.
 author: commit-protocol
 
-# Registered cast label used in message filenames and From headers.
-cast_label: CP
+# Navigational label in the turn filenames this checker files. Human-readable
+# metadata only: it carries no provenance authority and defines no job.
+contributor: Checker
+
+# The workflow id every revision must be stamped with, and the registered
+# schema, vendored here so a stale deployment is itself a defect.
+workflow: occurrence
+package_schema_path: protocol/occurrence-workflow-schema.json
+vendored_schema: occurrence-workflow-schema.json
 
 # Regexes for artifacts whose undeclared size decrease is a defect.
 watchlist: []
@@ -56,20 +75,23 @@ watchlist: []
 # Word stems that count as declaring a size decrease.
 decrease_markers: []
 
-# Revision metadata fields that claim files were changed.
-structured_file_fields: {}
+# Packages that may be cited without a revision pin.
+float_ok_packages: []
 
-# Historical folders exempt from the current filename form.
-grandfathered_bare_folders: []
-
-# Counter collisions already adjudicated by the governed corpus.
-adjudicated_collisions: []
-adjudication_cite: ""
+# Retired-regime tunables, read only by pre-migration checks. Not live config.
+pre_migration: {}
 ```
 
-`author`, `cast_label`, `watchlist`, and `structured_file_fields` are required by the schema. The lists and mapping may initially be empty. Register the checker identity and cast label in the governed protocol before enabling write-back, and cite package READMEs, closed issues, or other governing records when adding exceptions.
+`regime`, `author`, `workflow`, and `watchlist` are required by the schema; the lists may initially be empty. Cite package READMEs, closed issues, or other governing records when adding exceptions.
 
-Policy controls corpus-specific behavior. Protocol-level rules—anaimail filename forms, issue paths, and `quilt+s3://` URI syntax—are built into the checker.
+Vendor the registered workflow schema alongside the policy:
+
+```bash
+aws s3 cp s3://<registry-bucket>/.quilt/workflows/myprefix.json \
+  src/check_commit/policies/myprefix-workflow-schema.json
+```
+
+Policy controls corpus-specific behavior. Protocol-level rules — issue folder and turn filename forms, the routing key namespace, and `quilt+s3://` URI syntax — are built into the checker.
 
 ## 2. Test the policy locally
 
@@ -99,9 +121,10 @@ check-commit check \
 Useful options:
 
 - `--policy path/to/policy.yaml` tests a policy before placing it under `policies/`.
+- `--regime current|pre-migration` checks against a contract other than the policy's own.
 - `--json` emits a machine-readable report.
-- `--offline` skips resolution of URIs that point outside the checked package.
-- `check-commit compose <URI>` previews the response message without writing anything.
+- `--offline` skips resolution of URIs that point outside the checked package, and skips comparing the vendored schema against the registered one.
+- `check-commit compose <URI>` previews the issue turn without writing anything.
 
 Exit codes are `0` for pass, `1` for one or more defects, and `2` for an engine or configuration error. Known-unresolved findings are reported but do not produce a failing exit code.
 
@@ -175,7 +198,9 @@ To check and alert without writing responses, deploy with:
 (cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
 ```
 
-Notify-only mode is useful for evaluation or troubleshooting. Normal operation uses write-back once the checker's identity and cast label are registered for the governed prefix.
+Notify-only mode is useful for evaluation or troubleshooting.
+
+Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision and raises `SelfApplicationFailuresAlarm` rather than passing silently. Confirm that alarm is subscribed before enabling write-back.
 
 ## 4. Subscribe to findings
 
@@ -211,7 +236,7 @@ Each event produces a JSON outcome with one of these actions:
 - `skipped`: the event was malformed or outside the configured prefix; or
 - `error`: the checker could not complete the run.
 
-A clean revision is logged and needs no response. Findings are published to SNS and, with write-back enabled, rendered as an anaimail message and appended through the Quilt Packager. The checker recognizes and verifies its own response revision without generating a response loop.
+A clean revision is logged and needs no response. Findings are published to SNS and, with write-back enabled, rendered as an issue turn and appended through the Quilt Packager. The checker recognizes its own revisions by the shape of the write — one added turn carrying its own contributor label and slug — because `spec:protocol/occurrence.md` §3 keeps revision attribution out of package metadata. It verifies that revision and files nothing in response, so there is no response loop.
 
 Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 
@@ -221,16 +246,30 @@ Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 
 ## Checks performed
 
+Under the `current` regime:
+
 | Check | What it detects |
 | --- | --- |
-| `delta-set` | Revision metadata that names files absent from the actual change set, or changed files omitted from declared metadata. |
+| `workflow-stamp` | Revisions written without the registered workflow, whose metadata was therefore never validated. |
+| `metadata-shape` | Missing `related_packages` or `status`, an invalid status, or any field the registered schema's `additionalProperties: false` forbids. |
+| `issue-routes` | Route keys naming no issue in the manifest, and routes that survive closure. |
+| `issue-readme` | Issue READMEs missing `Opened`, `Originator`, or `Status`, closed without `Closed` and `Closed-By`, or created without leading with their H1. |
+| `turn-form` | Turn filenames that are not `<issue>.<turn>-<contributor>-<slug>.md`, name the wrong issue, or take a turn number already used. |
+| `turn-immutability` | A filed turn whose bytes changed. Corrections are new turns. |
+| `entry-count` | A commit message whose declared entry-count delta disagrees with the manifest, including a relocation that is not net zero. |
+| `pinned-citation` | Cross-package evidence cited unpinned or at `@latest`. |
+| `key-drift` | Logical keys backed at some other physical path, or outside the registry bucket. |
+| `schema-drift` | The package's or the registry's copy of the workflow schema diverging from the vendored one. |
 | `watchlist-size` | Undeclared size decreases in policy-defined artifacts. |
-| `filename-form` | Invalid anaimail filename forms and unadjudicated counter collisions. |
-| `issue-paths` | Closed issues resurrected at vacated paths, or closure records removed incorrectly. |
 | `uri-resolution` | Malformed or unresolved `quilt+s3://` references in changed documents. |
-| `metadata-hygiene` | Stale inherited metadata that describes files untouched by the revision. |
+
+Under the `pre-migration` regime, `watchlist-size` and `uri-resolution` still apply, joined by four checks of the retired contract: `delta-set`, `metadata-hygiene`, `filename-form`, and `issue-paths`.
 
 Findings are classified as `defect` or `known-unresolved`. Policy-defined adjudications remain visible as known-unresolved rather than being silently ignored.
+
+### What the checker does not check
+
+The registered schema already enforces the shape of package metadata on every validated write, and `is_workflow_required` makes that validation mandatory. The checks above are the part of the contract JSON Schema cannot express: cross-revision arithmetic, artifact grammar, and the join between metadata, entry set, and file bytes.
 
 ## Updating a deployed policy
 
@@ -247,7 +286,16 @@ bash scripts/build-lambda.sh
   --context writeBack=true)
 ```
 
-For the `occurrence` policy, `check-commit backtest` replays the pinned acceptance corpus and verifies the expected true positives and known-unresolved cases.
+For the `occurrence` policy, `check-commit backtest` replays a pinned acceptance corpus and verifies the expected true positives, required false negatives, and revisions that must come back clean. There are two corpora, one per regime, because a single pin cannot cover both contracts:
+
+```bash
+check-commit backtest --expectations backtest/expectations-current.yaml
+check-commit backtest --expectations backtest/expectations.yaml
+```
+
+`expectations-current.yaml` pins `occurrence/spec` on `protology`, whose history contains the closure-metadata repair the route check is built for. `expectations.yaml` pins `occurrence/probability` before the 2026-08-13 metadata migration and declares `regime: pre-migration`, so the retired checks are exercised at full strength against the corpus they were written for.
+
+Both need registry read credentials, so they run locally or pre-deploy rather than in CI.
 
 ## Development
 
@@ -258,5 +306,5 @@ The design and operational background are maintained in the auto-checker project
 ## Related Quilt packages
 
 - [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
-- [`occurrence/spec`](https://nightly.quilttest.com/b/quilt-ernest-staging/packages/occurrence/spec) — governing occurrence protocol and policy specifications
+- [`occurrence/spec`](https://open.quiltdata.com/b/protology/packages/occurrence/spec) — governing occurrence protocol and the registered workflow schema
 - [`marketing/ai-security`](https://nightly.quilttest.com/b/quilt-leadership/packages/marketing/ai-security) — related AI security guidance

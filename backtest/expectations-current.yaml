@@ -1,0 +1,93 @@
+# Current-regime acceptance corpus for check-commit.
+#
+# `occurrence/spec` on `protology`, 27 revisions to the pin. Chosen because it
+# is the package that defines the contract: it uses the §5 folder model
+# throughout, every revision is stamped `workflow: occurrence`, and its own
+# history contains a closure-metadata repair — the pin's parent left a route
+# set on a closed issue and the pin removes it.
+#
+# Companion corpus: backtest/expectations.yaml, the pre-migration regime.
+#
+# Replaying history against today's contract is deliberately anachronistic in
+# one direction: writes made before spec:053 (H1-first grammar, 2026-09-08) and
+# before the human-readable turn filenames (22e898df, 2026-09-04) are judged by
+# the rules that superseded them. §9 keeps those artifacts valid evidence and
+# does not retrofit them; the findings below record what the current contract
+# says about the writes, not a demand that the bytes change.
+
+regime: current
+package: occurrence/spec
+registry: s3://protology
+pin: d2b7cf60a91ab769498df49cca15253c9eb03c551d8ab2cb96d00695e7caaa5a
+
+must_flag:
+  # -- route integrity: §8 step 2 requires closure to clear the route --------
+  # The pin's own commit message is "053 closure metadata repair: remove stale
+  # route after closed disposition". 3ce3c15d is the revision it repairs: it
+  # set issues/053's README to Status: closed and left the route in place.
+  3ce3c15d:
+    checks: [issue-routes]
+    class: route-survives-closure
+
+  # -- issue README grammar: §5 closure provenance ---------------------------
+  # "Close 052 after Executive acceptance" set Status: closed without the
+  # required Closed and Closed-By fields. Still absent at the pin.
+  d883aaff:
+    checks: [issue-readme]
+    class: closure-provenance-missing
+
+  # A new issue README must lead with its H1 (§5 as amended by spec:053). The
+  # 053 README was itself written header-first and corrected one revision
+  # later by 0237777f — "move the README header after the H1 so it matches the
+  # form it proposes" — so the record adjudicates this one directly.
+  8c36d359:
+    checks: [issue-readme]
+    class: header-before-h1
+    evidence: 0237777f
+
+  # -- logical/physical key drift --------------------------------------------
+  # Closing 047-050 relocated four dispositions into issues/closed/ in the
+  # manifest while their objects stayed at issues/. Same class as the eight
+  # issues/closed/039* entries recorded in auto-checker#12.
+  c29849f2:
+    checks: [key-drift]
+    class: logical-physical-drift
+
+  # -- the 051 migration, four classes in one revision ----------------------
+  # Two turns relocated logical-only (001.md, 002.md still backed at
+  # issues/051aO-... and issues/051bP-...), three turns landed with pure
+  # numeric filenames, two issue READMEs were created header-first, and
+  # protocol/occurrence.md fell 29206 -> 7142 bytes with no reduction named in
+  # the commit message.
+  fc69cb94-key-drift:
+    hash: fc69cb94
+    checks: [key-drift]
+    class: logical-physical-drift
+  fc69cb94-turn-form:
+    hash: fc69cb94
+    checks: [turn-form]
+    class: numeric-turn-name
+  fc69cb94-readme:
+    hash: fc69cb94
+    checks: [issue-readme]
+    class: header-before-h1
+  fc69cb94-watchlist:
+    hash: fc69cb94
+    checks: [watchlist-size]
+    class: undeclared-shrink
+
+  # -- turn filenames: §5 makes pure numeric noncanonical for new turns -----
+  53ef2e8e: {checks: [turn-form], class: numeric-turn-name}
+  e8b80c19: {checks: [turn-form], class: numeric-turn-name}
+  0ec48cc4: {checks: [turn-form], class: numeric-turn-name}
+
+# Required false negatives are asserted by must_not_flag: revisions the current
+# contract clears. The pin is the closure-metadata repair itself and must come
+# back clean; the two no-op verification revisions must not manufacture
+# findings from an empty diff.
+must_not_flag:
+  - hash: d2b7cf60  # the repair: route removed, nothing else touched
+  - hash: 0237777f  # 053 README moved to H1-first
+  - hash: 6f0d11f5  # protocol cleanup, -6 entries, declared and arithmetic
+  - hash: ec34d58a  # no-op metadata verification
+  - hash: 22e898df  # turn filenames made human-readable, net zero

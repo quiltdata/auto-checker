@@ -5,7 +5,7 @@ from __future__ import annotations
 import traceback
 
 from . import __version__
-from .checks import ALL_CHECKS
+from .checks import checks_for
 from .corpus import PackageHistory
 from .model import Report, RevisionView
 from .policy import Policy
@@ -20,19 +20,30 @@ class Context:
         revision_pairs,
         online: bool,
         policy: Policy | None = None,
+        regime: str | None = None,
     ):
         self.history = history
         self.bucket = history.bucket
         self.package = history.package
         self.online = online
         self.policy = policy or Policy.for_package(history.package)
+        # A corpus may be replayed against a regime other than the prefix's
+        # own — that is what the pre-migration backtest does.
+        self.regime = regime or self.policy.regime
         self._pairs = list(revision_pairs)
         self._tophashes = [t for _, t in self._pairs]
         self._foreign_cache: dict = {}
+        self._object_cache: dict = {}
         self.notes: list[str] = []
 
     def content(self, view: RevisionView, path: str):
         return self.history.content(view, path)
+
+    def read_s3_uri(self, uri: str):
+        """A registry object by URI, memoized for the life of the context."""
+        if uri not in self._object_cache:
+            self._object_cache[uri] = self.history.read_s3_uri(uri)
+        return self._object_cache[uri]
 
     def note(self, text: str):
         if text not in self.notes:
@@ -78,9 +89,10 @@ def run(
         pointer=cur.pointer,
         prev_tophash=prev.tophash if prev else None,
         engine_version=__version__,
+        regime=ctx.regime,
     )
     ctx.notes = report.notes
-    for name, fn in ALL_CHECKS:
+    for name, fn in checks_for(ctx.regime):
         try:
             report.findings.extend(fn(prev, cur, ctx))
             report.checks_run.append(name)

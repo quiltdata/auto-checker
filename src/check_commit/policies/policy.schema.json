@@ -3,16 +3,32 @@
   "title": "check-commit per-prefix policy",
   "type": "object",
   "additionalProperties": false,
-  "required": ["author", "cast_label", "watchlist", "structured_file_fields"],
+  "required": ["author", "regime", "workflow", "watchlist"],
   "properties": {
+    "regime": {
+      "enum": ["current", "pre-migration"],
+      "description": "Which contract this prefix is checked against; selects which checks run"
+    },
     "author": {
       "type": "string",
-      "description": "Registry identity (spec:protocol/author_registry.yaml); goes in revision metadata"
+      "description": "Writer named in the commit message; never written to package metadata"
     },
-    "cast_label": {
+    "contributor": {
       "type": "string",
-      "pattern": "^[A-Z]{1,2}$",
-      "description": "Package-scoped cast label; goes in message filenames and From: headers"
+      "pattern": "^[A-Za-z][A-Za-z0-9]*$",
+      "description": "Navigational turn-filename label (spec:protocol/occurrence.md 5); carries no provenance authority"
+    },
+    "workflow": {
+      "type": "string",
+      "description": "Workflow id every revision must be stamped with"
+    },
+    "package_schema_path": {
+      "type": "string",
+      "description": "Logical key at which the package vendors the registered workflow schema"
+    },
+    "vendored_schema": {
+      "type": "string",
+      "description": "Our copy of the registered schema, resolved inside policies/"
     },
     "watchlist": {
       "type": "array",
@@ -24,28 +40,44 @@
       "items": { "type": "string" },
       "description": "Stems that count as declaring a reduction when in the same sentence as the file"
     },
-    "structured_file_fields": {
+    "float_ok_packages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Packages the protocol permits citing unpinned; every other cross-package citation must be revision-pinned"
+    },
+    "pre_migration": {
       "type": "object",
-      "additionalProperties": { "enum": ["added", "removed", "changed", "any"] },
-      "description": "user_meta fields naming files, mapped to the diff part their claims must land in"
-    },
-    "grandfathered_bare_folders": {
-      "type": "array",
-      "items": { "type": "string" }
-    },
-    "adjudicated_collisions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["folder", "counter", "letters"],
-        "properties": {
-          "folder": { "type": "string" },
-          "counter": { "type": "string" },
-          "letters": { "type": "array", "items": { "type": "string" } }
-        }
+      "additionalProperties": false,
+      "description": "Retired-regime tunables, read only by pre-migration-regime checks. Not live config.",
+      "properties": {
+        "watchlist": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "structured_file_fields": {
+          "type": "object",
+          "additionalProperties": { "enum": ["added", "removed", "changed", "any"] },
+          "description": "Retired user_meta fields naming files, mapped to the diff part their claims had to land in"
+        },
+        "grandfathered_bare_folders": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "adjudicated_collisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["folder", "counter", "letters"],
+            "properties": {
+              "folder": { "type": "string" },
+              "counter": { "type": "string" },
+              "letters": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "adjudication_cite": { "type": "string" }
       }
-    },
-    "adjudication_cite": { "type": "string" }
+    }
   }
 }

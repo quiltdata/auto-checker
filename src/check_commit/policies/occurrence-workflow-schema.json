@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "quilt-occurrence",
+  "title": "Occurrence",
+  "description": "Durable, queryable package-level state for Occurrence packages. Fixed fields are related_packages and status. Optional top-level keys matching ^issues/[^/]+$ may route an issue folder to the persistent participant who owes the next package-level action. Routing is convenience/discovery state, not required for issue correctness and never represents an ephemeral execution. Legacy flat issue-route keys ending in .md remain schema-valid during package migration because they also match this bounded namespace.",
+  "type": "object",
+  "required": ["related_packages", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "related_packages": {
+      "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "description": "Durable upstream package dependencies as package-name to relationship-name mappings."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "closed"],
+      "description": "Package lifecycle status, not revision, issue, or claim status."
+    }
+  },
+  "patternProperties": {
+    "^issues/[^/]+$": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional routing participant for an issue. In the current folder model the key is the issue-folder logical path and the value names the persistent participant responsible for advancing the package-level loop. The route is not required for issue validity and must not model an ephemeral recruit."
+    }
+  }
+}

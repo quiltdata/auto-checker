@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "check-commit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic tier-0 checker for governed Quilt packages"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,3 +25,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 check_commit = ["policies/*.yaml", "policies/*.md", "policies/*.json"]
+
+[tool.pytest.ini_options]
+# `pytest` from the repo root must mean the unit suite, not whatever a CDK
+# asset bundle happens to have vendored into cdk/cdk.out.
+testpaths = ["tests"]

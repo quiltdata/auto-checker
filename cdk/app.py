@@ -5,7 +5,7 @@ Inputs (CDK context, all defaulted):
   quiltStackName   Quilt CFN stack exporting the Packager queue (default quilt-staging)
   packagePrefix    governed package prefix (default occurrence)
   registryBuckets  comma-separated registry buckets (default quilt-ernest-staging)
-  writeBack        "true" to enable anaimail write-back (default false: notify-only)
+  writeBack        "true" to enable issue-turn write-back (default false: notify-only)
 
 Region comes from the deploy environment (defaults to us-east-1 via cdk.json).
 """

@@ -5,6 +5,116 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-10
+
+Re-bases the checker on the current `occurrence` contract. `occurrence/spec`
+migrated twice: the 2026-08-13 metadata retirement left three of six checks
+vacuous, and the folder model of `spec:protocol/occurrence.md` §5 then removed
+the artifacts the replacement target named. The registered schema at
+`s3://protology/.quilt/workflows/occurrence.json` now sets
+`additionalProperties: false` and the registry sets `is_workflow_required`, so
+every field the old checks read is forbidden rather than merely absent. See
+[#16](https://github.com/quiltdata/auto-checker/issues/16).
+
+### Added
+
+- Regimes. A policy declares `regime: current | pre-migration` and each check
+  declares which regimes authorize it, so a retired rule is never applied to a
+  current write and a current rule is never applied to a corpus that predates
+  it. `--regime` overrides the policy's choice; the report records which
+  contract was applied.
+- Ten checks for the current contract, none of which JSON Schema can express:
+  - `workflow-stamp` — a revision written without the registered workflow, and
+    therefore never validated.
+  - `metadata-shape` — the three-field shape of §3, including any field the
+    schema's `additionalProperties: false` forbids. This is the guard against
+    the retired fields returning through an unvalidated `package_patch`.
+  - `issue-routes` — route keys naming no issue in the manifest, and routes
+    that survive closure (§8 step 2).
+  - `issue-readme` — `Opened`/`Originator`/`Status` present, `Status` exactly
+    `open|closed`, `Closed` and `Closed-By` present when closed, and a newly
+    created README leading with its H1 (§5).
+  - `turn-form` — `<issue>.<turn>-<contributor>-<slug>.md`, matching the
+    containing folder, with no turn number taken twice.
+  - `turn-immutability` — a filed turn whose bytes changed.
+  - `entry-count` — the §4 duty, as arithmetic against the manifest rather than
+    mention-matching against metadata prose. Also flags a claimed relocation
+    that is not net zero, the signal that caught the `4ba6ce73` manifest loss
+    recorded in `spec:issues/closed/041` Incident 1.
+  - `pinned-citation` — cross-package evidence cited unpinned or at `@latest`
+    (§7), with the current-guidance exception configured per prefix.
+  - `key-drift` — logical keys backed at another physical path, or outside the
+    registry bucket.
+  - `schema-drift` — the package's and the registry's copies of the workflow
+    schema against the one vendored here. §2 makes a stale schema a defect in
+    its own right.
+- The registered schema, vendored at
+  `src/check_commit/policies/occurrence-workflow-schema.json`, byte-identical to
+  both the registered object and the package's own copy at
+  `protocol/occurrence-workflow-schema.json`.
+- A second acceptance corpus, `backtest/expectations-current.yaml`, pinning
+  `occurrence/spec@d2b7cf60` on `protology` — 27 revisions of the package that
+  defines the contract, including the closure-metadata repair the route check is
+  built for. `must_not_flag` asserts required false negatives, so a revision the
+  contract clears cannot start failing unnoticed.
+- The manifest workflow stamp is now carried on `RevisionView`, and
+  `RevisionView.workflow_id` exposes it.
+
+### Changed
+
+- `delta-set`, `metadata-hygiene`, `filename-form`, and `issue-paths` are now
+  pre-migration-regime checks. They read metadata fields the registered schema
+  forbids and a filename grammar §5 retired, so they are unreachable against a
+  current-regime package and sound only against the historical corpus (§9).
+  They are retained rather than deleted because `backtest/expectations.yaml` is
+  the only corpus that exercises them, and its adjudications
+  (`spec:issues/closed/030`, `auto-checker#6`) are real rulings of the record.
+- `backtest/expectations.yaml` declares `regime: pre-migration`. Its
+  `known_unresolved` entries now name the check being adjudicated instead of
+  relying on a hardcoded `filename-form` filter in the backtest runner.
+- Write-back files a conforming issue turn at
+  `issues/NNN-slug/NNN.TT-<contributor>-t0-check-of-<hash8>.md` — H1 first,
+  provenance list immediately after — instead of an anaimail message with an
+  envelope. There is no `Kind:`, no `Responds to`, and no `In-Reply-To`: folder
+  membership establishes issue membership and the turn sequence establishes
+  order.
+- The Packager request omits package metadata entirely. Absent metadata
+  preserves the parent's, whose `related_packages` and `status` carry forward
+  already valid; the four fields it used to send are all forbidden now. The
+  commit message carries the rationale and the entry-count claim, which is
+  where §3 and §4 put them.
+- The checker recognizes its own revisions by the shape of the write — one
+  added turn with its own contributor label and slug — because §3 keeps
+  revision attribution out of package metadata. The retired `author` metadata
+  field is no longer consulted.
+- `policies/occurrence.yaml` no longer references `protocol/anaimail.md` or
+  `protocol/author_registry.yaml`, neither of which exists in the package, and
+  no longer carries `cast_label` or `structured_file_fields` as live config.
+  The retired tunables moved under `pre_migration:`, where only
+  pre-migration-regime checks can reach them.
+- The `occurrence` watchlist is now `protocol/occurrence.md`, the prefix's
+  normative governing surface. The retired watchlist named message folders that
+  no longer exist and is scoped to the pre-migration regime.
+- Under the current regime, a declared reduction is read from the commit
+  message only; the retired `delta` field declares nothing.
+- A citation-form example in a protocol document is no longer read as a
+  citation. `protocol/recruitment.md` shows the form as
+  `quilt+s3://...#package=...@<revision>`, which both URI checks now skip.
+- The report schema is `check-commit-report/1`, adding `regime`. The view cache
+  is versioned, so entries written by an earlier engine are re-fetched rather
+  than read back with no workflow stamp.
+- `pytest` from the repository root now means the unit suite. It previously
+  collected whatever a CDK asset bundle had vendored into `cdk/cdk.out`.
+
+### Unverified
+
+- Whether the Quilt Packager stamps `workflow: occurrence` on the revision it
+  cuts. The queue contract carries no workflow field, so a stamped write depends
+  on the Packager honouring the registry's `default_workflow`. If it does not,
+  `workflow-stamp` fails on the checker's own revision and raises
+  `SelfApplicationFailuresAlarm` rather than passing silently. Subscribe to that
+  alarm before enabling write-back.
+
 ## [0.2.0] - 2026-08-20
 
 ### Changed
@@ -57,5 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quiltdata/auto-checker/releases/tag/v0.1.0
