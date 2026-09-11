@@ -24,6 +24,12 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+# One checker run: long enough to replay a package's revision history over the
+# network. The event queue's visibility timeout is derived from it, because
+# Lambda rejects a mapping where the queue would release a message while the
+# function is still working on it.
+CHECKER_TIMEOUT = Duration.minutes(10)
+
 
 class CheckCommitStack(cdk.Stack):
     def __init__(self, scope: Construct, cid: str, **kwargs):
@@ -50,10 +56,13 @@ class CheckCommitStack(cdk.Stack):
 
         # -- ingress: default-bus rule -> SQS (04 §3, §6) --------------------
         dlq = sqs.Queue(self, "DLQ", retention_period=Duration.days(14))
+        # Lambda refuses an event source mapping whose queue visibility timeout
+        # is below the function timeout, so this must stay >= CHECKER_TIMEOUT.
+        # One minute of margin covers the poller's own overhead.
         queue = sqs.Queue(
             self,
             "Events",
-            visibility_timeout=Duration.minutes(6),
+            visibility_timeout=CHECKER_TIMEOUT.plus(Duration.minutes(1)),
             dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
         )
         events.Rule(
@@ -79,7 +88,7 @@ class CheckCommitStack(cdk.Stack):
             architecture=lambda_.Architecture.ARM_64,
             code=lambda_.Code.from_asset("../build/lambda"),
             handler="check_commit.lambda_handler.handler",
-            timeout=Duration.minutes(10),
+            timeout=CHECKER_TIMEOUT,
             memory_size=1024,
             # one revision at a time: serializes checks and counter allocation
             reserved_concurrent_executions=1,

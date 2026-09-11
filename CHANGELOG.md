@@ -76,13 +76,41 @@ corpus lives. See
   grants.
 - CDK is bootstrapped in `867344438354`/`us-east-1` (`CDKToolkit`).
 
-### Unverified
+### Fixed
 
-- Whether the open Quilt stack emits `com.quiltdata` / `package-revision`
-  events onto the default bus for `occurrence/*` writes. The ingress rule
-  assumes it does; a deployment that receives no events is the symptom.
-- The deployment itself. Nothing in this release has been applied to the open
-  account, and `FindingsTopicArn` has no subscriber yet.
+- The event queue's visibility timeout was below the checker's function timeout
+  — 6 minutes against 10 — which Lambda rejects when it creates the event source
+  mapping. Both are now derived from one `CHECKER_TIMEOUT` constant, with the
+  queue a minute above it, so the two cannot drift apart again.
+
+  Both values date from the initial commit, so the stack has never been
+  internally consistent, yet the staging deployment created its mapping without
+  complaint in August. Why it was accepted then and refused now is not something
+  this release establishes — the staging stack was deleted before the failure
+  surfaced, so there is nothing left to inspect. Lambda validates the pair when
+  the mapping is created, not when the function timeout changes, so any
+  deployment carrying an already-created mapping would not have re-checked it.
+
+### Deployed
+
+- `check-commit` in `867344438354`/`us-east-1`, notify-only, against
+  `s3://protology` and the `occurrence/` prefix. Verified end to end:
+  - The checker runs in Lambda and logs
+    `{"action": "checked", "detail": "occurrence/spec@d2b7cf60a91a PASS"}` — the
+    policy loads from the bundled asset, the read grants reach `protology`, and
+    `quilt3` works with `HOME=/tmp`.
+  - The ingress path delivers. An `occurrence/spec` `package-revision` event on
+    the default bus passed the rule's `occurrence/` prefix filter, went through
+    SQS, and produced a `checked` outcome in the log.
+  - The open Quilt stack does emit these events on the default bus, which was
+    previously the unverified assumption behind the rule. `open-quilt-bio` runs
+    its own `BenchlingPackageRevisionRule` on the same bus with the same
+    `com.quiltdata` / `package-revision` pattern, and its target queue has
+    received revision events every day for the past two weeks.
+  - `FindingsTopicArn` has an email subscription, pending confirmation from the
+    inbox.
+  - The `CheckCommit` namespace is receiving `RevisionsChecked` and `Defects`.
+    Both queues are empty and the DLQ has never held a message.
 
 ### Removed
 
