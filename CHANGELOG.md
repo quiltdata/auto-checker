@@ -107,8 +107,7 @@ corpus lives. See
     its own `BenchlingPackageRevisionRule` on the same bus with the same
     `com.quiltdata` / `package-revision` pattern, and its target queue has
     received revision events every day for the past two weeks.
-  - `FindingsTopicArn` has an email subscription, pending confirmation from the
-    inbox.
+  - `FindingsTopicArn` has a confirmed email subscription.
   - The `CheckCommit` namespace is receiving `RevisionsChecked` and `Defects`.
     Both queues are empty and the DLQ has never held a message.
 
