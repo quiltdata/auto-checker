@@ -52,9 +52,10 @@ corpus lives. See
   `transcripts`) the catalog does not index, and points the corpus links at
   `open.quiltdata.com/b/protology`. The design-documentation links still name
   `nightly.quilttest.com`, which the retarget does not affect.
-- README records that the two backtest corpora are in different accounts and
-  that a stale `~/.cache/check-commit` can serve the old registry's views after
-  a retarget.
+- README records that the two backtest corpora are in different accounts, and
+  states what `~/.cache/check-commit` actually guarantees across a retarget:
+  because entries are bucket-scoped and the revision list is fetched live, the
+  old registry's views cannot be served after the switch.
 
 ### Verified
 
@@ -85,8 +86,18 @@ corpus lives. See
 
 - The event queue's visibility timeout was below the checker's function timeout
   — 6 minutes against 10 — which Lambda rejects when it creates the event source
-  mapping. Both are now derived from one `CHECKER_TIMEOUT` constant, with the
-  queue a minute above it, so the two cannot drift apart again.
+  mapping. Both now derive from one `CHECKER_TIMEOUT` constant, the queue at
+  `VISIBILITY_RETRY_FACTOR` (6) times the function timeout, so they cannot drift
+  apart again. That is 60 minutes of visibility against a 10-minute function.
+
+  Six times, rather than the minimum Lambda enforces, because clearing the
+  minimum only stops the mapping being rejected. With
+  `reserved_concurrent_executions=1` a backlog leaves messages
+  received-but-throttled, and if visibility expires while they wait they are
+  redelivered and their receive count climbs toward `max_receive_count` on
+  throttling alone — dead-lettering sound events during a burst. The wider window
+  costs 3 hours to dead-letter a genuinely poisonous message, which an
+  asynchronous findings pipeline can absorb.
 
   Both values date from the initial commit, so the stack has never been
   internally consistent, yet the staging deployment created its mapping without
