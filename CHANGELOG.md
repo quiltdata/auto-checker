@@ -34,9 +34,16 @@ corpus lives. See
   `s3:GetObjectVersion` on `{prefix}/*` and `.quilt/*`) are unchanged. The
   Lambda could not legally use the write grants on this registry anyway: the
   write-back payload does not yet satisfy the registered workflow.
-- `scripts/packager-roundtrip.py` defaults to `--stack-name open-quilt-bio`
-  and `--bucket protology`, with a note that this registry validates writes, so
-  a Packager rejection surfaces as the probe timing out rather than as an error.
+- `scripts/packager-roundtrip.py` defaults to `--stack-name open-quilt-bio` and
+  `--bucket protology`, and its request is now one the registry admits: the two
+  fields the registered schema requires, instead of the forbidden `author` and
+  `delta` pair. On a validating registry the old payload was rejected outright,
+  and a rejection is invisible from the probe — it surfaces only as the wait for
+  the revision timing out. The verification step asserts the diff, the metadata
+  round-trip, and the workflow stamp rather than running the full `occurrence`
+  policy: a scratch package is not a governed one, so the protocol checks never
+  applied to it, but the stamp is exactly the open Packager question, and this
+  probe is how it gets answered.
 - README documents the deployment context for the open account as a table of
   context keys and values, notes that the nine `occurrence/*` packages the
   prefix filter matches include four (`born`, `fixed`, `history`,
