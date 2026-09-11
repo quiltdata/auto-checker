@@ -3,6 +3,10 @@
 Shape per proj/260810-auto-checker 04 §6; permissions per §7. The Lambda
 holds no manifest-write access: package revisions are cut by the Quilt
 stack's Packager, reached via its exported queue.
+
+Write-back is the only reason this stack touches the Packager queue or holds
+any write grant, so `writeBack` gates both. A notify-only deployment carries no
+dependency on the queue exports and no ability to write anything.
 """
 
 import aws_cdk as cdk
@@ -26,13 +30,23 @@ class CheckCommitStack(cdk.Stack):
         super().__init__(scope, cid, **kwargs)
 
         ctx = self.node.try_get_context
-        quilt_stack = ctx("quiltStackName") or "quilt-staging"
+        quilt_stack = ctx("quiltStackName") or "open-quilt-bio"
         prefix = ctx("packagePrefix") or "occurrence"
-        buckets = (ctx("registryBuckets") or "quilt-ernest-staging").split(",")
+        buckets = (ctx("registryBuckets") or "protology").split(",")
         write_back = str(ctx("writeBack") or "false").lower()
+        writes_enabled = write_back == "true"
 
-        packager_queue_arn = Fn.import_value(f"{quilt_stack}-PackagerQueueArn")
-        packager_queue_url = Fn.import_value(f"{quilt_stack}-PackagerQueueUrl")
+        # The Packager queue is write-back's only destination, so a notify-only
+        # deployment neither imports it nor is granted anything against it.
+        # Importing unconditionally would make the stack fail to synth against a
+        # Quilt stack that does not export the queue, rather than merely deploy
+        # without write-back.
+        packager_queue_arn = (
+            Fn.import_value(f"{quilt_stack}-PackagerQueueArn") if writes_enabled else ""
+        )
+        packager_queue_url = (
+            Fn.import_value(f"{quilt_stack}-PackagerQueueUrl") if writes_enabled else ""
+        )
 
         # -- ingress: default-bus rule -> SQS (04 §3, §6) --------------------
         dlq = sqs.Queue(self, "DLQ", retention_period=Duration.days(14))
@@ -100,16 +114,20 @@ class CheckCommitStack(cdk.Stack):
                 resources=[f"{a}/{p}" for a in bucket_arns for p in (f"{prefix}/*", ".quilt/*")],
             )
         )
-        fn.add_to_role_policy(
-            iam.PolicyStatement(
-                sid="WriteOwnMessagesOnly",
-                actions=["s3:PutObject"],
-                resources=[f"{a}/{prefix}/*" for a in bucket_arns],
+        if writes_enabled:
+            # Staging a turn file and asking the Packager to cut the revision are
+            # both write-back steps. Notify-only gets neither: the Lambda would
+            # not be able to use the grants legally anyway.
+            fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    sid="WriteOwnMessagesOnly",
+                    actions=["s3:PutObject"],
+                    resources=[f"{a}/{prefix}/*" for a in bucket_arns],
+                )
             )
-        )
-        fn.add_to_role_policy(
-            iam.PolicyStatement(actions=["sqs:SendMessage"], resources=[packager_queue_arn])
-        )
+            fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["sqs:SendMessage"], resources=[packager_queue_arn])
+            )
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["cloudwatch:PutMetricData"],

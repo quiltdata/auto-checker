@@ -1,10 +1,11 @@
 {
   "app": "python3 app.py",
   "context": {
-    "quiltStackName": "quilt-staging",
+    "account": "867344438354",
+    "region": "us-east-1",
+    "quiltStackName": "open-quilt-bio",
     "packagePrefix": "occurrence",
-    "registryBuckets": "quilt-ernest-staging",
-    "writeBack": "false",
-    "region": "us-east-1"
+    "registryBuckets": "protology",
+    "writeBack": "false"
   }
 }

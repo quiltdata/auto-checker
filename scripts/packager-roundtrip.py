@@ -14,6 +14,12 @@ sqs:SendMessage on the Packager queue. Writes ONLY to the test package.
 Not a pytest; run by hand or from a deploy pipeline:
 
     PYTHONPATH=src python3 scripts/packager-roundtrip.py
+
+The defaults target the open account (s3://protology, Quilt stack
+open-quilt-bio). That registry sets `is_workflow_required`, so the scratch
+package must be one the default workflow admits, or the probe must run against
+a registry that does not validate; a Packager rejection surfaces as a timeout
+waiting for the revision, not as an error from this script.
 """
 
 from __future__ import annotations
@@ -62,9 +68,9 @@ def head_revision(package: str, registry: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--stack-name", default="quilt-staging", help="Quilt CFN stack with the Packager export")
+    ap.add_argument("--stack-name", default="open-quilt-bio", help="Quilt CFN stack with the Packager export")
     ap.add_argument("--region", default="us-east-1")
-    ap.add_argument("--bucket", default="quilt-ernest-staging")
+    ap.add_argument("--bucket", default="protology")
     ap.add_argument("--package", default="test/check-commit-roundtrip")
     ap.add_argument("--timeout", type=int, default=180, help="seconds to wait for the Packager")
     args = ap.parse_args()

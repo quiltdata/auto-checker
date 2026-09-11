@@ -5,6 +5,92 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-10
+
+Retargets the deployment at the governed corpus in `s3://protology`, served by
+the open catalog at <https://open.quiltdata.com>. The checked-in defaults still
+named `quilt-ernest-staging` in account `712023778557`, which is not where the
+corpus lives. See
+[#17](https://github.com/quiltdata/auto-checker/issues/17).
+
+### Changed
+
+- CDK defaults name the open account: `account=867344438354`,
+  `region=us-east-1`, `quiltStackName=open-quilt-bio`,
+  `registryBuckets=protology`. `packagePrefix=occurrence` and
+  `writeBack=false` carry over unchanged. `account` is now defaulted in
+  `cdk.json` rather than left unset, so `cdk deploy` with no `--context` flags
+  targets the intended account instead of whichever one the ambient credentials
+  belong to.
+- A notify-only stack no longer depends on the Packager queue. The
+  `Fn.import_value` calls for `<quiltStackName>-PackagerQueueArn` and
+  `-PackagerQueueUrl` are made only when `writeBack=true`, so the stack synths
+  and deploys against a Quilt stack that does not export them. Previously a
+  missing export was a synth failure regardless of whether write-back was
+  enabled — the one dependency a notify-only deployment has no use for.
+- A notify-only stack is granted no write access. `s3:PutObject` on
+  `{prefix}/*` and `sqs:SendMessage` on the Packager queue are attached only
+  when `writeBack=true`. Read grants (`s3:ListBucket`, `s3:GetObject`,
+  `s3:GetObjectVersion` on `{prefix}/*` and `.quilt/*`) are unchanged. The
+  Lambda could not legally use the write grants on this registry anyway: the
+  write-back payload does not yet satisfy the registered workflow.
+- `scripts/packager-roundtrip.py` defaults to `--stack-name open-quilt-bio`
+  and `--bucket protology`, with a note that this registry validates writes, so
+  a Packager rejection surfaces as the probe timing out rather than as an error.
+- README documents the deployment context for the open account as a table of
+  context keys and values, notes that the nine `occurrence/*` packages the
+  prefix filter matches include four (`born`, `fixed`, `history`,
+  `transcripts`) the catalog does not index, and points the corpus links at
+  `open.quiltdata.com/b/protology`. The design-documentation links still name
+  `nightly.quilttest.com`, which the retarget does not affect.
+- README records that the two backtest corpora are in different accounts and
+  that a stale `~/.cache/check-commit` can serve the old registry's views after
+  a retarget.
+
+### Verified
+
+- The Packager queue exports are present in the open account:
+  `open-quilt-bio-PackagerQueueArn` and `open-quilt-bio-PackagerQueueUrl`, both
+  from stack `open-quilt-bio` in `us-east-1`. Write-back has a destination when
+  it is enabled; it stays disabled for the contract reason below.
+- `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True`
+  with `default_workflow: occurrence`. Unlike `quilt-ernest-staging`, this
+  registry validates every write, which is why `writeBack=false` is not merely
+  the safe default here but the only correct setting until the contract work in
+  [#16](https://github.com/quiltdata/auto-checker/issues/16) lands.
+- `check-commit check "quilt+s3://protology#package=occurrence/spec"` runs
+  against the open account from a developer machine: `PASS` at `d2b7cf60a91a`,
+  regime `current`, 12 checks.
+- `check-commit backtest --expectations backtest/expectations-current.yaml`
+  passes against `protology` — 27 revisions, 11 required true positives, 5
+  required false negatives.
+- Both `writeBack` modes synth: notify-only emits no `Fn::ImportValue` and no
+  `s3:PutObject`; `writeBack=true` emits both queue imports and the write
+  grants.
+- CDK is bootstrapped in `867344438354`/`us-east-1` (`CDKToolkit`).
+
+### Unverified
+
+- Whether the open Quilt stack emits `com.quiltdata` / `package-revision`
+  events onto the default bus for `occurrence/*` writes. The ingress rule
+  assumes it does; a deployment that receives no events is the symptom.
+- The deployment itself. Nothing in this release has been applied to the open
+  account, and `FindingsTopicArn` has no subscriber yet.
+
+### Retained deliberately
+
+- `backtest/expectations.yaml` keeps `registry: s3://quilt-ernest-staging` and
+  its `occurrence/probability@7d74cc22a054` pin. `occurrence/probability` exists
+  on `protology` too, but with a different revision history, so re-pinning would
+  discard the adjudications the corpus records (`spec:issues/closed/030`,
+  [#6](https://github.com/quiltdata/auto-checker/issues/6)) rather than move
+  them. It is the only corpus that exercises the pre-migration checks, and it is
+  reachable only while that registry stays live.
+- The hardcoded stack ID `check-commit` in `cdk/app.py`. A single deployment does
+  not need it parameterized; running a `quilt-ernest-staging` deployment
+  alongside this one does, and that is
+  [#9](https://github.com/quiltdata/auto-checker/issues/9).
+
 ## [0.3.0] - 2026-09-10
 
 Re-bases the checker on the current `occurrence` contract. `occurrence/spec`
@@ -167,6 +253,7 @@ every field the old checks read is forbidden rather than merely absent. See
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.1]: https://github.com/quiltdata/auto-checker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quiltdata/auto-checker/releases/tag/v0.1.0

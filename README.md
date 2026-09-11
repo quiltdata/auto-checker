@@ -35,12 +35,31 @@ A governed corpus outlives the contract it was written under. Each policy declar
 You need:
 
 - a Quilt stack in the target AWS account and region;
-- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`;
+- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`, for write-back only;
 - one or more registry buckets containing the packages to check;
 - AWS credentials for the target account and region; and
 - AWS CDK bootstrapped in that account and region.
 
 The auto-checker stack must run in the same account and region as the Quilt stack whose Packager queue it uses.
+
+A notify-only deployment needs neither the Packager queue exports nor write access. With `writeBack=false` the stack does not import the exports and grants the Lambda no `s3:PutObject` or `sqs:SendMessage`, so it synths and deploys against a Quilt stack that does not export a Packager queue at all.
+
+### Deployment context: the `occurrence` corpus
+
+The governed corpus lives in `s3://protology`, served by the open catalog at <https://open.quiltdata.com>. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it:
+
+| Context key | Value | Notes |
+| --- | --- | --- |
+| `account` | `867344438354` | the open account |
+| `region` | `us-east-1` | |
+| `quiltStackName` | `open-quilt-bio` | exports `open-quilt-bio-PackagerQueueArn` and `-PackagerQueueUrl` |
+| `registryBuckets` | `protology` | |
+| `packagePrefix` | `occurrence` | `occurrence/*` — nine packages, including four (`born`, `fixed`, `history`, `transcripts`) that carry named-package pointers the catalog does not index. The EventBridge prefix filter matches revision events for all of them. |
+| `writeBack` | `false` | notify-only; see below |
+
+Write-back stays off for this deployment. `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True` with `default_workflow: occurrence`, so the registry validates every write, and whether the Packager stamps that workflow on a revision it cuts from a queue request is still unverified. Enable write-back only after subscribing to `SelfApplicationFailuresAlarm`, which is where an unstamped self-write surfaces.
+
+Deploying against a second registry in the same account and region needs a distinct stack ID first; see the note in [Build and deploy](#3-build-and-deploy).
 
 ## 1. Configure a prefix policy
 
@@ -173,8 +192,15 @@ python3 -m venv .venv-cdk
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
+  --context account=<aws-account-id> \
   --context region=<aws-region> \
   --context writeBack=true)
+```
+
+Every one of those keys is defaulted in `cdk/cdk.json`, so a deployment of the `occurrence` corpus described above is just:
+
+```bash
+(cd cdk && ../.venv-cdk/bin/cdk deploy)
 ```
 
 This creates:
@@ -198,7 +224,7 @@ To check and alert without writing responses, deploy with:
 (cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
 ```
 
-Notify-only mode is useful for evaluation or troubleshooting.
+Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. It is also the only mode that works against a registry whose workflow validation the write-back payload does not yet satisfy: the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, rather than granting write access the Lambda cannot legally use.
 
 Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision and raises `SelfApplicationFailuresAlarm` rather than passing silently. Confirm that alarm is subscribed before enabling write-back.
 
@@ -295,7 +321,9 @@ check-commit backtest --expectations backtest/expectations.yaml
 
 `expectations-current.yaml` pins `occurrence/spec` on `protology`, whose history contains the closure-metadata repair the route check is built for. `expectations.yaml` pins `occurrence/probability` before the 2026-08-13 metadata migration and declares `regime: pre-migration`, so the retired checks are exercised at full strength against the corpus they were written for.
 
-Both need registry read credentials, so they run locally or pre-deploy rather than in CI.
+Each corpus records its own `registry`, and the two are not in the same account: the current corpus reads `s3://protology` in the open account, and the pre-migration corpus reads `s3://quilt-ernest-staging`, which the retarget leaves in place as the only reachable home for those adjudications. Both need registry read credentials, so they run locally or pre-deploy rather than in CI, and the current-regime gate is the one that must pass before a deployment to the open account.
+
+A stale local view cache can serve the old registry after a retarget. `check-commit` caches under `~/.cache/check-commit` keyed by bucket and package, so the retarget itself is safe, but clear it if a local run disagrees with the catalog.
 
 ## Development
 
@@ -305,6 +333,12 @@ The design and operational background are maintained in the auto-checker project
 
 ## Related Quilt packages
 
-- [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
+The governed corpus is in `s3://protology` on the open catalog:
+
 - [`occurrence/spec`](https://open.quiltdata.com/b/protology/packages/occurrence/spec) — governing occurrence protocol and the registered workflow schema
+- [`occurrence/probability`](https://open.quiltdata.com/b/protology/packages/occurrence/probability), [`occurrence/theory`](https://open.quiltdata.com/b/protology/packages/occurrence/theory), [`occurrence/outcome`](https://open.quiltdata.com/b/protology/packages/occurrence/outcome), [`occurrence/gpt`](https://open.quiltdata.com/b/protology/packages/occurrence/gpt) — the checked corpus
+
+Design documentation lives on a separate registry, unaffected by the retarget:
+
+- [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
 - [`marketing/ai-security`](https://nightly.quilttest.com/b/quilt-leadership/packages/marketing/ai-security) — related AI security guidance

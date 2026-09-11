@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """CDK app for the check-commit tier-0 auto-checker (04 §6).
 
-Inputs (CDK context, all defaulted):
-  quiltStackName   Quilt CFN stack exporting the Packager queue (default quilt-staging)
+Inputs (CDK context, all defaulted in cdk.json):
+  account          target AWS account (default 867344438354, the open account)
+  region           target AWS region (default us-east-1)
+  quiltStackName   Quilt CFN stack exporting the Packager queue (default open-quilt-bio)
   packagePrefix    governed package prefix (default occurrence)
-  registryBuckets  comma-separated registry buckets (default quilt-ernest-staging)
+  registryBuckets  comma-separated registry buckets (default protology)
   writeBack        "true" to enable issue-turn write-back (default false: notify-only)
 
-Region comes from the deploy environment (defaults to us-east-1 via cdk.json).
+The defaults target the governed corpus in s3://protology, served by the open
+catalog at https://open.quiltdata.com. The auto-checker stack must land in the
+same account and region as the Quilt stack whose Packager queue it uses.
 """
 
 import aws_cdk as cdk
