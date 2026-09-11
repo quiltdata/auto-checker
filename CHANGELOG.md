@@ -129,6 +129,39 @@ corpus lives. See
   - The `CheckCommit` namespace is receiving `RevisionsChecked` and `Defects`.
     Both queues are empty and the DLQ has never held a message.
 
+### Added (testing)
+
+- Template assertions for the CDK stack, `tests/test_cdk_stack.py`, covering the
+  failure classes this stack has actually produced. The visibility-timeout bug
+  above is the motivating case: synth emits a valid template and Lambda rejects
+  the mapping at deploy, so the cheap place to catch it is an assertion on the
+  synthesized template. Both timeout invariants are asserted as relations rather
+  than literals, and each test was checked by reintroducing the bug it covers and
+  confirming it fails.
+- The notify-only contract is now enforced rather than reviewed: no
+  `s3:PutObject`, no `sqs:SendMessage` to the checker's role, no
+  `Fn::ImportValue`, and an empty `PACKAGER_QUEUE_URL` when `writeBack` is off,
+  with the write path reappearing when it is on. Also asserted: read grants
+  scoped to `{prefix}/*` and `.quilt/*` rather than bucket-wide, the write grant
+  scoped to `{prefix}/*`, the event pattern, reserved concurrency of one, and the
+  three alarms.
+- A `cdk` CI job that installs `aws-cdk-lib`, builds the Lambda asset, synthesizes
+  the app, and runs those assertions. Synth alone catches a third class the
+  assertions cannot: errors in stack construction, which is how a
+  `Duration + Duration` `TypeError` surfaced while writing the timeout fix.
+  Nothing here needs AWS credentials — account and region are explicit and the
+  stack does no context lookups — so it runs on every push alongside the unit
+  job.
+
+  The assertions skip in the `unit` job, which does not install `aws-cdk-lib`, so
+  the `cdk` job asserts `aws_cdk.assertions` imports before running them. A
+  skipped test must not be able to pass for a green run.
+- `cdk/stack.py` resolves its Lambda asset from the module's own location instead
+  of `../build/lambda` relative to the process's working directory, which only
+  resolved when synth ran from `cdk/`. This is what makes the stack constructible
+  from the test suite. The asset hash is content-based, so the template is
+  unchanged and `cdk diff` against the deployed stack reports no differences.
+
 ### Outstanding
 
 - No `checked` outcome from an organically written revision. #17 asks for the

@@ -329,6 +329,16 @@ A retarget cannot serve stale views from the old registry. `check-commit` namesp
 
 Run the test suite with `pytest -q`. The core engine and Lambda use the same policy loader and checks, so local CLI results exercise the same checking behavior used after deployment.
 
+The CDK stack has its own assertions in `tests/test_cdk_stack.py`, which need `aws-cdk-lib` and a built Lambda asset. They skip under a plain `pytest -q`, so to run them:
+
+```bash
+pip install -r cdk/requirements.txt
+bash scripts/build-lambda.sh
+pytest tests/test_cdk_stack.py -q
+```
+
+They assert relations rather than snapshot the template: that the queue's visibility timeout is not below the function timeout (which Lambda rejects at deploy, not at synth), that it follows the 6x retry ratio, and that notify-only grants no write access and imports no Packager queue. CI runs them in a separate `cdk` job alongside `cdk synth`, neither of which needs AWS credentials.
+
 The design and operational background are maintained in the auto-checker project package, especially `05-auto-checker-stack.md` and `06-auto-checking-a-prefix.md`.
 
 ## Related Quilt packages

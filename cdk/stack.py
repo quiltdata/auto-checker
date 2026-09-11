@@ -9,6 +9,8 @@ any write grant, so `writeBack` gates both. A notify-only deployment carries no
 dependency on the queue exports and no ability to write anything.
 """
 
+import pathlib
+
 import aws_cdk as cdk
 from aws_cdk import (
     Duration,
@@ -31,6 +33,11 @@ from constructs import Construct
 CHECKER_TIMEOUT = Duration.minutes(10)
 # AWS's recommended ratio of queue visibility timeout to function timeout.
 VISIBILITY_RETRY_FACTOR = 6
+
+# Resolved from this file, not the process's working directory, so the stack can
+# be synthesized or asserted against from anywhere. `scripts/build-lambda.sh`
+# writes here.
+LAMBDA_ASSET = pathlib.Path(__file__).resolve().parent.parent / "build" / "lambda"
 
 
 class CheckCommitStack(cdk.Stack):
@@ -99,7 +106,7 @@ class CheckCommitStack(cdk.Stack):
             "Checker",
             runtime=lambda_.Runtime.PYTHON_3_12,
             architecture=lambda_.Architecture.ARM_64,
-            code=lambda_.Code.from_asset("../build/lambda"),
+            code=lambda_.Code.from_asset(str(LAMBDA_ASSET)),
             handler="check_commit.lambda_handler.handler",
             timeout=CHECKER_TIMEOUT,
             memory_size=1024,
