@@ -164,4 +164,8 @@ class Report:
         }
 
     def to_json(self):
-        return json.dumps(self.to_dict(), indent=2, sort_keys=False)
+        # ensure_ascii=False: findings quote package prose, which is full of em
+        # dashes and accented characters. Escaping them to \u2014 and \u00e9
+        # makes the one field a human reads — `detail` — the hardest part of the
+        # report to read. The output is UTF-8; every consumer here handles it.
+        return json.dumps(self.to_dict(), indent=2, sort_keys=False, ensure_ascii=False)

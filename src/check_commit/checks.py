@@ -146,14 +146,48 @@ def _first_content_line(text: str) -> str:
     return ""
 
 
+def _status_token(raw: str | None, *, fold_case: bool = True) -> str | None:
+    """The state token of a §5 `Status` field, or None if it names no state.
+
+    §5 as amended: "`Status` begins with a state token, exactly `open` or
+    `closed`. An optional annotation may follow the token." So the state is the
+    leading word and everything after it is prose. Markdown emphasis around the
+    token is ignored, since `**closed** — promoted` is a closure.
+
+    The rule that makes only the *leading* word admissible is §5's other
+    sentence: a reader "must not infer from a `closed` appearing later in the
+    annotation that the issue is closed", because `open — q9 closed through
+    021.29` is open.
+
+    `fold_case` separates two questions that want different answers. Reading an
+    issue's state is lenient: a badly-cased `Closed` still tells you the loop is
+    shut, and treating it as unknown would lose a closure. Checking the grammar
+    is strict, because §5 says `open | closed` exactly — so `bad-status` passes
+    `fold_case=False` and reports the casing while the state still reads.
+    """
+    if not raw:
+        return None
+    head = raw.strip().lstrip("*_ ").split()
+    if not head:
+        return None
+    token = head[0].strip("*_:;,.—-")
+    if fold_case:
+        token = token.lower()
+    return token if token in ("open", "closed") else None
+
+
 def _issue_status(ctx, view: RevisionView, readme_path: str) -> str | None:
-    """`open` / `closed` from an issue README, or None if unreadable."""
+    """The issue's state token, or None if unreadable or no state is named.
+
+    Callers cannot distinguish "unreadable" from "names no state" here, and
+    must not: both mean the loop state is undetermined, and §5 says an
+    automated reader must not guess it. `check_issue_readme/bad-status` is what
+    reports a Status that names no state.
+    """
     data = ctx.content(view, readme_path)
     if data is None:
         return None
-    fields = _provenance(data.decode("utf-8", errors="replace"))
-    status = fields.get("Status")
-    return status.lower() if status else None
+    return _status_token(_provenance(data.decode("utf-8", errors="replace")).get("Status"))
 
 
 def _route_target(key: str, view: RevisionView):
@@ -374,22 +408,28 @@ def check_issue_readme(prev, cur, ctx) -> list[Finding]:
                         f"requires Opened, Originator, and Status",
                     )
                 )
-        # §5: "Status is exactly open | closed". Grammar is checked literally
-        # here; reading an issue's *state* elsewhere stays case-tolerant, since
-        # a badly-cased status still tells you the loop is shut.
+        # §5 as amended: the state is the leading token, exactly `open` or
+        # `closed`, and an annotation may follow it. What is faulted is a Status
+        # that names no state at all, because §5 then leaves the loop state
+        # undefined and forbids an automated reader from guessing it — and
+        # because §8's closure obligations are keyed to that token.
         raw_status = fields.get("Status")
-        if raw_status and raw_status not in ("open", "closed"):
+        if raw_status and _status_token(raw_status, fold_case=False) is None:
             findings.append(
                 Finding(
                     check="issue-readme",
                     severity=DEFECT,
                     kind="bad-status",
                     paths=(path,),
-                    detail=f"issue Status is {raw_status!r}; §5 requires exactly "
-                    f"open|closed",
+                    detail=f"issue Status is {raw_status!r}, whose leading token is not "
+                    f"exactly 'open' or 'closed'; §5 admits an annotation after the "
+                    f"token but the token itself is what carries the state, and §8's "
+                    f"closure obligations are keyed to it",
                 )
             )
-        if (raw_status or "").lower() == "closed":
+        # The state read stays lenient, so a Status whose *grammar* is faulted
+        # above is still held to its closure obligations here.
+        if _status_token(raw_status) == "closed":
             absent = [f for f in ("Closed", "Closed-By") if f not in fields]
             if absent:
                 findings.append(

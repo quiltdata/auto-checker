@@ -219,6 +219,70 @@ def test_status_grammar_is_case_sensitive(policy):
     ]
 
 
+def test_status_token_parsing():
+    """§5 as amended: the state is the leading token, an annotation may follow,
+    and emphasis around the token is ignored."""
+    t = checks._status_token
+    assert t("open") == "open"
+    assert t("closed") == "closed"
+    # the live forms that used to be faulted
+    assert t("open — q10 finite classicality unresolved") == "open"
+    assert t("closed and promoted") == "closed"
+    assert t("**closed — promoted as Theory 43**") == "closed"
+    assert t("**closed** — promoted as Theory 43") == "closed"
+    # §5: a `closed` inside the annotation is not a closure
+    assert t("open — q9 program closed through `021.29`; q10 unresolved") == "open"
+    # names no state
+    assert t("pending") is None
+    assert t("in-progress — nearly there") is None
+    assert t("") is None
+    assert t(None) is None
+    # the state read folds case, the grammar check does not
+    assert t("Closed") == "closed"
+    assert t("Closed", fold_case=False) is None
+
+
+def test_annotated_status_is_no_longer_faulted(policy):
+    """The finding that fired three times on occurrence/outcome 021 and
+    occurrence/gpt 009. §5 now admits the annotation."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta=META)
+    body = (
+        "# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n"
+        "- **Status:** open — q9 program closed through `021.29`; q10 unresolved\n"
+    ).encode()
+    assert checks.check_issue_readme(prev, cur, _readme_ctx(policy, body)) == []
+
+
+def test_annotated_closure_owes_provenance_and_clears_its_route(policy):
+    """The hole the amendment closes. occurrence/theory 068 is `closed and
+    promoted`, still routed, and was reported by nothing: comparing the whole
+    field to "closed" made an annotated closure read as neither state."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev(
+        "b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta={**META, FOLDER: "theory"}
+    )
+    body = b"# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n- **Status:** closed and promoted\n"
+    ctx = _readme_ctx(policy, body)
+    assert kinds(checks.check_issue_readme(prev, cur, ctx)) == [
+        ("issue-readme", "closure-provenance-missing")
+    ]
+    assert kinds(checks.check_issue_routes(prev, cur, ctx)) == [
+        ("issue-routes", "route-survives-closure")
+    ]
+
+
+def test_annotated_open_does_not_read_as_closed(policy):
+    """`open — q9 closed through 021.29` must not clear its own route."""
+    cur = rev("b" * 64, BASE, meta={**META, FOLDER: "outcome"})
+    body = (
+        "# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n"
+        "- **Status:** open — q9 program closed through `021.29`\n"
+    ).encode()
+    ctx = FakeCtx(policy, contents={f"{FOLDER}/README.md": body})
+    assert checks.check_issue_routes(None, cur, ctx) == []
+
+
 def test_conforming_readme_passes(policy):
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta=META)

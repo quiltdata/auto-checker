@@ -92,6 +92,19 @@ def run(
         regime=ctx.regime,
     )
     ctx.notes = report.notes
+    # Two pointers may name one manifest: re-pushing identical content produces
+    # the same top hash and a fresh pointer. `occurrence/theory` has six such
+    # pairs. The revision then has nothing to compare itself against, so every
+    # diff-scoped check is a no-op and only the whole-state checks say anything
+    # — which is a true reading of a no-op re-push, but a reader looking at
+    # `prev_tophash` would otherwise think a comparison had happened.
+    if prev is not None and prev.tophash == cur.tophash:
+        ctx.note(
+            f"this revision re-publishes the manifest already at "
+            f"{cur.tophash[:12]}, so it adds, removes and changes nothing. Checks "
+            f"that read a diff have nothing to read; the whole-state checks "
+            f"(metadata-shape, issue-routes, workflow-stamp, schema-drift) still apply"
+        )
     for name, fn in checks_for(ctx.regime):
         try:
             report.findings.extend(fn(prev, cur, ctx))

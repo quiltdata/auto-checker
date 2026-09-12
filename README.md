@@ -280,6 +280,12 @@ Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 
 These are created without SNS actions, so they change state without sending anything. Notification runs through the findings topic, which the checker publishes to directly for defects, engine errors, and self-application failures. Watch the alarms on a dashboard; subscribe to the topic to be told.
 
+### What a notification looks like
+
+SNS email delivery is plain text, so the topic carries prose rather than the report's JSON: a subject line that says what happened, then defects, known-unresolved findings and notes in separate sections, then a catalog link to the revision. The wording lives in `policies/<prefix>-notify.md` — the same template seam `compose` uses for issue turns, so what a notification says is policy rather than code.
+
+The JSON report is still produced and still authoritative; `lambda_handler` prints it to CloudWatch Logs, where a machine consumer belongs. `check-commit check --json` prints the same thing locally.
+
 ## Checks performed
 
 Under the `current` regime:
@@ -289,7 +295,7 @@ Under the `current` regime:
 | `workflow-stamp` | Revisions written without the registered workflow, whose metadata was therefore never validated. |
 | `metadata-shape` | Missing `related_packages` or `status`, an invalid status, any field the registered schema's `additionalProperties: false` forbids, and — as a backstop — metadata that does not validate against the vendored schema. |
 | `issue-routes` | Route keys naming no issue in the manifest, and routes that survive closure. |
-| `issue-readme` | Issue READMEs missing `Opened`, `Originator`, or `Status`, closed without `Closed` and `Closed-By`, or created without leading with their H1. |
+| `issue-readme` | Issue READMEs missing `Opened`, `Originator`, or `Status`, a `Status` whose leading token is not exactly `open` or `closed`, closure without `Closed` and `Closed-By`, or a new README not leading with its H1. |
 | `turn-form` | Issue folders outside the `NNN-slug` form, and pure numeric turn filenames. Departures from the `<issue>.<turn>-<contributor>-<slug>.md` grammar — wrong issue component, reused turn number, any other shape — are known-unresolved, because §5 states that grammar as a SHOULD. |
 | `turn-immutability` | A filed turn whose bytes changed. Corrections are new turns. |
 | `entry-count` | A commit message whose declared entry-count delta disagrees with the manifest, including a relocation that is not net zero. |

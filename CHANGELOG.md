@@ -5,6 +5,54 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-09-12
+
+Three changes to what a person receives, and one silent enforcement hole closed
+by the first of them.
+
+### Changed
+
+- `spec:protocol/occurrence.md` §5 now admits an annotated `Status`. It said
+  "Status is exactly `open | closed`" while three packages were writing a state
+  token followed by a running summary — `open — q10 finite classicality
+  unresolved`, `closed and promoted`, `**closed** — promoted as Theory 43`. The
+  rule moved rather than the practice, because the annotation carries real loop
+  state and the flat reading was also costing enforcement. §5 now specifies a
+  state token, exactly `open` or `closed`, optionally followed by an advisory
+  annotation carrying no protocol meaning, with two rules a reader must honour:
+  emphasis around the token is ignored, and a `closed` appearing later in the
+  annotation is not a closure, since `open — q9 closed through 021.29` is open.
+  Filed as `occurrence/spec@1219604c`.
+- `_issue_status` parses the leading token instead of comparing the whole field
+  to `"closed"`. That comparison was a silent hole: an annotated closure read as
+  neither state, so `issue-routes/route-survives-closure` stopped firing on
+  exactly the issues that had been closed. `occurrence/theory` Issue 068 is
+  `closed and promoted`, closed since 2026-09-08 with provenance, still routed,
+  and was reported by nothing — `bad-status` did not fire either, because it
+  only inspects READMEs the revision changed. It is now reported.
+  `issue-readme/bad-status` keeps the strict reading and faults a leading token
+  that is not exactly `open` or `closed`, so a miscased `Closed` is still called
+  out while its closure obligations still bind.
+- The findings topic carries prose. SNS email delivery is plain text, so what a
+  subscriber received was the report's JSON — `detail`, the one field carrying a
+  finding's substance, arrived nested deepest with every em dash escaped to
+  `\u2014`. Notifications now render through `policies/<prefix>-notify.md`, the
+  same template seam `compose` uses, with defects, known-unresolved and notes in
+  separate sections and a catalog link to the revision. The JSON is not lost:
+  `lambda_handler` prints it to CloudWatch, where a machine consumer belongs.
+- `Report.to_json` sets `ensure_ascii=False`. The reports quote package prose,
+  which is full of em dashes, section signs and accented characters; escaping
+  them made the human-readable field the least readable part of the output.
+
+### Added
+
+- A note when a revision re-publishes an identical manifest. Two pointers may
+  name one top hash, and `occurrence/theory` has six such pairs. The revision
+  then has nothing to compare against, so every diff-scoped check is a no-op —
+  a true reading of a no-op re-push, but `prev_tophash` equal to `tophash` would
+  otherwise leave a reader thinking a comparison had happened. Only the
+  whole-state checks apply, and the report now says so.
+
 ## [0.3.3] - 2026-09-12
 
 Recalibrates three checks that reported `defect` for conditions
