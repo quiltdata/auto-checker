@@ -166,7 +166,7 @@ corpus lives. See
 - The assertions synthesize with the context from `cdk.json`, as the CDK CLI
   does, rather than against `App()` with none. `App` does not read `cdk.json`, so
   the first version of these tests asserted only the fallback defaults in
-  `stack.py` — a `cdk.json` that enabled write-back against `protology` left all
+  `stack.py` — a `cdk.json` that enabled write-back against `protology` left
   every one of them passing. Two tests now cover the deployment configuration
   directly: the
   checked-in context is asserted field by field, and `stack.py`'s fallbacks are
@@ -222,8 +222,9 @@ corpus lives. See
   retarget rather than a second deployment: no `check-commit` stack now checks
   the pre-migration registry. Both queues were empty and the stack exported
   nothing, so nothing was lost and nothing depended on it. Its findings topic
-  went with it, along with the confirmed email subscription — the open-account
-  deployment needs its own via `scripts/sns.py subscribe`.
+  went with it, along with the confirmed email subscription. The open-account
+  deployment has its own, subscribed via `scripts/sns.py subscribe` and confirmed;
+  see the Deployed section above.
 
   The `quilt-staging` Quilt stack and its Packager exports are untouched, as is
   `s3://quilt-ernest-staging` and the pinned pre-migration corpus. The checker's
