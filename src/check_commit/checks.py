@@ -19,7 +19,7 @@ import json
 import posixpath
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from . import policy
 from .model import DEFECT, KNOWN_UNRESOLVED, Finding, RevisionView
@@ -472,6 +472,23 @@ def check_turn_immutability(prev, cur, ctx) -> list[Finding]:
         if policy.turn_number(base) is None:
             continue
         old, new = prev.entries[path], cur.entries[path]
+        # `changed` counts undecidable content identity as changed so the
+        # content checks re-read the file. Here a change *is* the violation,
+        # so an undecidable comparison must not be reported as a mutation.
+        if cur.content_changed(prev, path) is None:
+            findings.append(
+                Finding(
+                    check="turn-immutability",
+                    severity=KNOWN_UNRESOLVED,
+                    kind="incomparable-turn-digest",
+                    paths=(path,),
+                    detail=f"{path} is recorded as {old.hash_type or 'an unnamed digest'} in "
+                    f"{prev.tophash[:12]} and {new.hash_type or 'an unnamed digest'} in "
+                    f"{cur.tophash[:12]}, on differing object versions; whether the filed "
+                    f"turn was mutated is unverified",
+                )
+            )
+            continue
         findings.append(
             Finding(
                 check="turn-immutability",
@@ -579,11 +596,17 @@ def check_pinned_citation(prev, cur, ctx) -> list[Finding]:
 # -- logical keys are backed at their own physical path ---------------------
 
 def _physical_path(physical_key: str):
-    """(bucket, key) of an s3 physical key, ignoring the version query."""
+    """(bucket, key) of an s3 physical key, ignoring the version query.
+
+    A physical key is a URI, so its path is percent-encoded: a logical key
+    containing a space or a non-ASCII character arrives here as `%20` or
+    `%C3%A9`. The comparison against the logical key is on S3 key names, not
+    on URIs, so the path is decoded back to the name S3 actually holds.
+    """
     u = urlparse(physical_key)
     if u.scheme != "s3":
         return None
-    return u.netloc, u.path
+    return u.netloc, unquote(u.path)
 
 
 def check_key_drift(prev, cur, ctx) -> list[Finding]:

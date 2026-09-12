@@ -21,7 +21,7 @@ DEFAULT_CACHE = pathlib.Path(
 
 # Bump whenever a cached view gains a field, so stale entries are re-fetched
 # rather than silently read back with the new field missing.
-VIEW_CACHE_SCHEMA = 2
+VIEW_CACHE_SCHEMA = 3
 
 
 class PackageHistory:
@@ -65,7 +65,12 @@ class PackageHistory:
                     message=d.get("message") or "",
                     meta=d.get("meta") or {},
                     entries={
-                        k: Entry(size=v.get("size"), hash=v.get("hash"), physical_key=v.get("pk"))
+                        k: Entry(
+                            size=v.get("size"),
+                            hash=v.get("hash"),
+                            physical_key=v.get("pk"),
+                            hash_type=v.get("hash_type"),
+                        )
                         for k, v in d["entries"].items()
                     },
                     workflow=d.get("workflow"),
@@ -81,6 +86,7 @@ class PackageHistory:
                 size=entry.size,
                 hash=h.get("value") if isinstance(h, dict) else h,
                 physical_key=str(entry.physical_key),
+                hash_type=h.get("type") if isinstance(h, dict) else None,
             )
         manifest_meta = pkg._meta or {}
         workflow = manifest_meta.get("workflow")
@@ -101,7 +107,12 @@ class PackageHistory:
                     "meta": view.meta,
                     "workflow": view.workflow,
                     "entries": {
-                        k: {"size": e.size, "hash": e.hash, "pk": e.physical_key}
+                        k: {
+                            "size": e.size,
+                            "hash": e.hash,
+                            "pk": e.physical_key,
+                            "hash_type": e.hash_type,
+                        }
                         for k, e in entries.items()
                     },
                 },
@@ -135,7 +146,7 @@ class PackageHistory:
         under `.quilt/workflows/` is named, version included, by the manifest's
         own workflow stamp.
         """
-        from urllib.parse import parse_qs, urlparse
+        from urllib.parse import parse_qs, unquote, urlparse
 
         u = urlparse(uri)
         if u.scheme != "s3":
@@ -149,7 +160,12 @@ class PackageHistory:
 
             self._s3 = boto3.client("s3")
         try:
-            resp = self._s3.get_object(Bucket=u.netloc, Key=u.path.lstrip("/"), **params)
+            # The URI path is percent-encoded; boto3 wants the raw S3 key, so a
+            # key with a space or a non-ASCII character must be decoded first
+            # or the fetch 404s and the content check reads as unresolvable.
+            resp = self._s3.get_object(
+                Bucket=u.netloc, Key=unquote(u.path).lstrip("/"), **params
+            )
         except Exception:
             return None
         return resp["Body"].read()

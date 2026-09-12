@@ -17,6 +17,40 @@ class Entry:
     size: int | None
     hash: str | None
     physical_key: str | None
+    # The digest algorithm the manifest recorded, e.g. `sha2-256-chunked` or
+    # `CRC64NVME`. Two entries' digests are only comparable under one
+    # algorithm, and a registry may migrate algorithms between revisions.
+    hash_type: str | None = None
+
+    @property
+    def version_id(self) -> str | None:
+        """The S3 version the physical key pins, if it pins one."""
+        if not self.physical_key:
+            return None
+        from urllib.parse import parse_qs, urlparse
+
+        vid = parse_qs(urlparse(self.physical_key).query).get("versionId")
+        return vid[0] if vid else None
+
+    def same_content_as(self, other: "Entry") -> bool | None:
+        """True / False if content identity is decidable, None if it is not.
+
+        Comparable digests settle it. When two revisions were written under
+        different hash algorithms the digests carry no information about each
+        other, and a versioned physical key settles it instead: an S3 object
+        version is immutable, so the same version is the same bytes. With
+        neither a common algorithm nor a shared object version, content
+        identity cannot be decided from the manifests alone — a differing
+        size still proves a difference, but equal sizes prove nothing.
+        """
+        if self.hash and other.hash and self.hash_type == other.hash_type:
+            return self.hash == other.hash and self.size == other.size
+        if self.size != other.size:
+            return False
+        vid = self.version_id
+        if vid is not None and vid == other.version_id:
+            return True
+        return None
 
 
 @dataclasses.dataclass
@@ -38,16 +72,29 @@ class RevisionView:
         return (self.workflow or {}).get("id")
 
     def diff(self, prev: "RevisionView | None"):
-        """Return (added, removed, changed) logical keys vs prev."""
+        """Return (added, removed, changed) logical keys vs prev.
+
+        An entry whose content identity is undecidable (see
+        `Entry.same_content_as`) counts as changed, so every check that
+        re-reads changed content still re-reads it. Only
+        `check_turn_immutability` treats a change as a violation in itself,
+        and it asks `content_changed` for the tri-state rather than inferring
+        a mutation from this list.
+        """
         pe = prev.entries if prev else {}
         added = sorted(k for k in self.entries if k not in pe)
         removed = sorted(k for k in pe if k not in self.entries)
         changed = sorted(
-            k
-            for k, e in self.entries.items()
-            if k in pe and (e.hash != pe[k].hash or e.size != pe[k].size)
+            k for k, e in self.entries.items() if k in pe and e.same_content_as(pe[k]) is not True
         )
         return added, removed, changed
+
+    def content_changed(self, prev: "RevisionView | None", path: str) -> bool | None:
+        """True / False if `path`'s content changed, None if undecidable."""
+        if prev is None or path not in prev.entries or path not in self.entries:
+            return None
+        same = self.entries[path].same_content_as(prev.entries[path])
+        return None if same is None else not same
 
 
 @dataclasses.dataclass(frozen=True)

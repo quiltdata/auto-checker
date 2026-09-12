@@ -5,6 +5,78 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-09-12
+
+### Fixed
+
+- Two false-positive classes that fired on conditions no package author
+  created. Both were found by running the engine against every `occurrence/*`
+  package in `s3://protology` rather than one revision.
+- A change of digest algorithm is no longer read as content mutation.
+  `Entry` recorded a manifest hash's value but not its type, so when the
+  registry moved `occurrence/gpt` from `CRC64NVME` to `sha2-256-chunked`
+  between revisions, every digest differed and `diff()` reported all 149
+  entries as changed. That produced 68 bogus
+  `turn-immutability/turn-mutated` defects on identical byte counts, and
+  swept every content-scanning check across the whole package, adding 99
+  `pinned-citation/unpinned-citation` and 6 `uri-resolution/missing-path`
+  findings for text nobody had touched. `Entry` now carries `hash_type` and
+  `Entry.same_content_as` returns a tri-state: comparable digests settle
+  content identity, and when the algorithms differ a pinned S3 object
+  version settles it instead, since an object version is immutable.
+  `diff()` still counts an undecidable comparison as changed so the content
+  checks re-read the file; `check_turn_immutability`, the one check where a
+  change is itself the violation, asks `RevisionView.content_changed` for
+  the tri-state and reports the undecidable case as
+  `known-unresolved/incomparable-turn-digest` rather than asserting a
+  mutation it cannot see. Cached views bump to schema 3.
+- A percent-encoded physical key is no longer read as a logical-only
+  relocation. A physical key is a URI, so a logical key containing a space
+  or a non-ASCII character arrives as `%20` or `%C3%A9`; `key-drift`
+  compared that URI against the raw logical key and flagged the mismatch.
+  All 14 `key-drift/logical-physical-drift` defects on `occurrence/born`
+  were this artifact — `04a-précis.md`, `archive/GOLDEN STRATUM.md` and
+  eleven others. `_physical_path` now decodes the path before comparing, so
+  the comparison is on S3 key names rather than on URIs, and the detail
+  reports the key S3 actually holds. `PackageHistory.read_s3_uri` had the
+  same assumption and would 404 on those keys, making their content read as
+  unresolvable; it decodes too.
+
+### Changed
+
+- `scripts/build-lambda.sh` verifies the built asset against `src/check_commit`
+  and refuses to ship one that diverges, and clears setuptools' `build/lib`
+  staging directory first. `build_py` copies a source file only when it is newer
+  than the staged copy, so a stale staging directory can quietly package an old
+  module; nothing had caught this because `cdk diff` compares asset hashes, and a
+  consistently wrong asset hashes consistently. The same comparison runs as a
+  test in the `cdk` CI job, which builds the asset.
+
+  This is hardening, not a fix for an observed incident. The deployed asset did
+  match `main`; what it did not match was a working tree carrying the engine
+  fixes above, which is a normal state and not a build fault. The check exists
+  because that distinction cost an hour to establish by hand.
+
+### Operational
+
+- The deployment in `867344438354` was running the pre-fix engine, so the false
+  positives above were live: across 53 organic revisions it reported inflated
+  counts — 176 findings on `occurrence/gpt@60b22ac6` where the fixed engine
+  reports 13 — and published each defect-bearing revision to the findings topic.
+  Those notifications were largely artifact. Redeploying on this release is what
+  clears them.
+- Organic `package-revision` delivery is confirmed, which was the last acceptance
+  item open on [#17](https://github.com/quiltdata/auto-checker/issues/17):
+  `occurrence/gpt`, `occurrence/outcome` and `occurrence/theory` writes reached
+  the deployed rule and were checked, with no engine errors and nothing
+  dead-lettered. Four of 53 revisions were delivered twice, which is SQS
+  at-least-once behaviour rather than a defect.
+- `scripts/clear_closed_routes.py` clears route keys that survived closure on
+  `occurrence/gpt`, the `issue-routes/route-survives-closure` findings that
+  remain once the artifacts above are discounted. Metadata-only: `selector_fn`
+  returns `False` for every entry so existing versioned physical keys are reused.
+  Writes are behind `--apply`; `--dry-run` prints and exits.
+
 ## [0.3.1] - 2026-09-10
 
 Retargets the deployment at the governed corpus in `s3://protology`, served by
@@ -417,6 +489,7 @@ every field the old checks read is forbidden rather than merely absent. See
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.2]: https://github.com/quiltdata/auto-checker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/quiltdata/auto-checker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0

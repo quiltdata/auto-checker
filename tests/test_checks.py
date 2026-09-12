@@ -311,6 +311,64 @@ def test_legacy_numeric_turn_is_also_immutable(ctx):
     ]
 
 
+TURN = f"{FOLDER}/007.01-Owner-opening.md"
+
+
+def _retype(view, path, hash_type, value, version="v1"):
+    """Rewrite one entry's digest as a different algorithm would record it."""
+    old = view.entries[path]
+    view.entries[path] = Entry(
+        size=old.size,
+        hash=value,
+        physical_key=f"s3://b/occurrence/testpkg/{path}?versionId={version}",
+        hash_type=hash_type,
+    )
+
+
+def test_hash_algorithm_change_is_not_a_mutation(ctx):
+    """A registry that migrates digest algorithms rewrites every entry's hash
+    without touching a byte. Comparing digests across algorithms made all of
+    them look mutated; the pinned object version settles it instead."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, BASE, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=")
+    _retype(cur, TURN, "CRC64NVME", "kA7qhA5VDXk=")
+    assert cur.content_changed(prev, TURN) is False
+    assert TURN not in cur.diff(prev)[2]
+    assert checks.check_turn_immutability(prev, cur, ctx) == []
+
+
+def test_incomparable_digest_on_new_object_version_is_unresolved(ctx):
+    """Different algorithm and a different object version: the manifests alone
+    cannot say whether the turn was mutated, so the check says so rather than
+    asserting a mutation it cannot see."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, BASE, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=", version="v1")
+    _retype(cur, TURN, "CRC64NVME", "kA7qhA5VDXk=", version="v2")
+    assert cur.content_changed(prev, TURN) is None
+    fs = checks.check_turn_immutability(prev, cur, ctx)
+    assert kinds(fs) == [("turn-immutability", "incomparable-turn-digest")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
+
+
+def test_size_change_beats_an_incomparable_digest(ctx):
+    """Digests may be incomparable, but a differing size still proves a change."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, TURN: (80, "h1")}, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=")
+    cur.entries[TURN] = Entry(
+        size=80,
+        hash="kA7qhA5VDXk=",
+        physical_key=f"s3://b/occurrence/testpkg/{TURN}?versionId=v1",
+        hash_type="CRC64NVME",
+    )
+    assert cur.content_changed(prev, TURN) is True
+    assert kinds(checks.check_turn_immutability(prev, cur, ctx)) == [
+        ("turn-immutability", "turn-mutated")
+    ]
+
+
 # --- entry-count ------------------------------------------------------------
 
 def test_entry_count_claim_verified(ctx):
@@ -513,6 +571,36 @@ def test_aligned_keys_pass(ctx):
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/007.02-PM-x.md": (10, "hn")}, meta=META)
     assert checks.check_key_drift(prev, cur, ctx) == []
+
+
+def test_percent_encoded_physical_key_is_not_drift(ctx):
+    """A physical key is a URI, so a logical key holding a space or a non-ASCII
+    character arrives percent-encoded. Comparing the URI to the logical key
+    made every such entry look logical-only relocated."""
+    path = "archive/04a-précis and notes(2).md"
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    cur.entries[path] = Entry(
+        size=10,
+        hash="hn",
+        physical_key=(
+            "s3://b/occurrence/testpkg/archive/04a-pr%C3%A9cis%20and%20notes%282%29.md"
+        ),
+    )
+    assert checks.check_key_drift(prev, cur, ctx) == []
+
+
+def test_percent_encoding_does_not_mask_real_drift(ctx):
+    """Decoding must not turn a genuine relocation into a pass."""
+    path = "archive/04a précis.md"
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    cur.entries[path] = Entry(
+        size=10, hash="hn", physical_key="s3://b/occurrence/testpkg/04a%20pr%C3%A9cis.md"
+    )
+    fs = checks.check_key_drift(prev, cur, ctx)
+    assert kinds(fs) == [("key-drift", "logical-physical-drift")]
+    assert "04a précis.md" in fs[0].detail  # reported as the key S3 holds
 
 
 # --- schema-drift -----------------------------------------------------------
