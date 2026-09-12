@@ -35,12 +35,31 @@ A governed corpus outlives the contract it was written under. Each policy declar
 You need:
 
 - a Quilt stack in the target AWS account and region;
-- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`;
+- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`, for write-back only;
 - one or more registry buckets containing the packages to check;
 - AWS credentials for the target account and region; and
 - AWS CDK bootstrapped in that account and region.
 
 The auto-checker stack must run in the same account and region as the Quilt stack whose Packager queue it uses.
+
+A notify-only deployment needs neither the Packager queue exports nor write access. With `writeBack=false` the stack does not import the exports and grants the Lambda no `s3:PutObject` or `sqs:SendMessage`, so it deploys against a Quilt stack that does not export a Packager queue at all. (A missing export is a deployment failure, not a synth failure: `Fn::ImportValue` is emitted unresolved and CloudFormation reports `No export named ... found`.)
+
+### Deployment context: the `occurrence` corpus
+
+The governed corpus lives in `s3://protology`, served by the open catalog at <https://open.quiltdata.com>. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it:
+
+| Context key | Value | Notes |
+| --- | --- | --- |
+| `account` | `867344438354` | the open account |
+| `region` | `us-east-1` | |
+| `quiltStackName` | `open-quilt-bio` | exports `open-quilt-bio-PackagerQueueArn` and `-PackagerQueueUrl` |
+| `registryBuckets` | `protology` | |
+| `packagePrefix` | `occurrence` | `occurrence/*` — nine packages, including four (`born`, `fixed`, `history`, `transcripts`) that carry named-package pointers the catalog does not index. The EventBridge prefix filter matches revision events for all of them. |
+| `writeBack` | `false` | notify-only; see below |
+
+Write-back stays off for this deployment. `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True` with `default_workflow: occurrence`, so the registry validates every write, and whether the Packager stamps that workflow on a revision it cuts from a queue request is still unverified. Enable write-back only once the findings topic has a confirmed subscriber, which is where an unstamped self-write surfaces: the checker publishes self-application failures to `FindingsTopicArn` directly. The alarms carry no SNS action, so they are the CloudWatch view rather than a notification channel.
+
+Deploying against a second registry in the same account and region needs a distinct stack ID first; see the note in [Build and deploy](#3-build-and-deploy).
 
 ## 1. Configure a prefix policy
 
@@ -168,13 +187,27 @@ bash scripts/build-lambda.sh
 
 python3 -m venv .venv-cdk
 .venv-cdk/bin/pip install -r cdk/requirements.txt
+```
 
-(cd cdk && ../.venv-cdk/bin/cdk deploy \
+`cdk/requirements.txt` provides the Python construct library. The CDK CLI is a separate npm package, so run it with `npx` and point `--app` at the virtualenv's interpreter so the app can import `aws_cdk`:
+
+```bash
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
+  --context account=<aws-account-id> \
   --context region=<aws-region> \
   --context writeBack=true)
+```
+
+The CLI version is pinned deliberately: `cdk/requirements.txt` holds `aws-cdk-lib` below 2.200 because newer versions emit a cloud-assembly schema this CLI cannot read, so the two move together. A globally installed `cdk` of a compatible version works just as well.
+
+Every context key above is defaulted in `cdk/cdk.json`, so a deployment of the `occurrence` corpus described above is just:
+
+```bash
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy --app "../.venv-cdk/bin/python app.py")
 ```
 
 This creates:
@@ -195,12 +228,13 @@ The CDK app currently uses the stack ID `check-commit`. To deploy more than one 
 To check and alert without writing responses, deploy with:
 
 ```bash
-(cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" --context writeBack=false ...)
 ```
 
-Notify-only mode is useful for evaluation or troubleshooting.
+Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
 
-Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision and raises `SelfApplicationFailuresAlarm` rather than passing silently. Confirm that alarm is subscribed before enabling write-back.
+Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision rather than passing silently: the checker publishes a `SELF-APPLICATION FAILED` message to the findings topic and increments `SelfApplicationFailures`. Confirm the findings topic has a subscriber before enabling write-back. Subscribing to the alarm is not the thing to check — the alarms are created without SNS actions, so notification runs through the topic, and the alarm is the aggregated CloudWatch signal.
 
 ## 4. Subscribe to findings
 
@@ -244,6 +278,8 @@ Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 - `EngineErrorsAlarm`
 - `SelfApplicationFailuresAlarm`
 
+These are created without SNS actions, so they change state without sending anything. Notification runs through the findings topic, which the checker publishes to directly for defects, engine errors, and self-application failures. Watch the alarms on a dashboard; subscribe to the topic to be told.
+
 ## Checks performed
 
 Under the `current` regime:
@@ -278,7 +314,8 @@ After changing a prefix policy:
 ```bash
 pytest -q
 bash scripts/build-lambda.sh
-(cd cdk && ../.venv-cdk/bin/cdk deploy \
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
@@ -295,16 +332,34 @@ check-commit backtest --expectations backtest/expectations.yaml
 
 `expectations-current.yaml` pins `occurrence/spec` on `protology`, whose history contains the closure-metadata repair the route check is built for. `expectations.yaml` pins `occurrence/probability` before the 2026-08-13 metadata migration and declares `regime: pre-migration`, so the retired checks are exercised at full strength against the corpus they were written for.
 
-Both need registry read credentials, so they run locally or pre-deploy rather than in CI.
+Each corpus records its own `registry`, and the two are not in the same account: the current corpus reads `s3://protology` in the open account, and the pre-migration corpus reads `s3://quilt-ernest-staging`, which the retarget leaves in place as the only reachable home for those adjudications. Both need registry read credentials, so they run locally or pre-deploy rather than in CI, and the current-regime gate is the one that must pass before a deployment to the open account.
+
+A retarget cannot serve stale views from the old registry. `check-commit` namespaces its cache by bucket and package under `~/.cache/check-commit`, and fetches the revision list live on every run, so pointing at a different registry reads a different cache and re-resolves the history.
 
 ## Development
 
 Run the test suite with `pytest -q`. The core engine and Lambda use the same policy loader and checks, so local CLI results exercise the same checking behavior used after deployment.
 
+The CDK stack has its own assertions in `tests/test_cdk_stack.py`, which need `aws-cdk-lib` and a built Lambda asset. They skip under a plain `pytest -q`, so to run them:
+
+```bash
+pip install -r cdk/requirements.txt
+bash scripts/build-lambda.sh
+pytest tests/test_cdk_stack.py -q
+```
+
+They assert relations rather than snapshot the template: that the queue's visibility timeout is not below the function timeout (which Lambda rejects at deploy, not at synth), that it follows the 6x retry ratio, and that notify-only grants no write access and imports no Packager queue. CI runs them in a separate `cdk` job alongside `cdk synth`, neither of which needs AWS credentials.
+
 The design and operational background are maintained in the auto-checker project package, especially `05-auto-checker-stack.md` and `06-auto-checking-a-prefix.md`.
 
 ## Related Quilt packages
 
-- [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
+The governed corpus is in `s3://protology` on the open catalog:
+
 - [`occurrence/spec`](https://open.quiltdata.com/b/protology/packages/occurrence/spec) — governing occurrence protocol and the registered workflow schema
+- [`occurrence/probability`](https://open.quiltdata.com/b/protology/packages/occurrence/probability), [`occurrence/theory`](https://open.quiltdata.com/b/protology/packages/occurrence/theory), [`occurrence/outcome`](https://open.quiltdata.com/b/protology/packages/occurrence/outcome), [`occurrence/gpt`](https://open.quiltdata.com/b/protology/packages/occurrence/gpt) — the checked corpus
+
+Design documentation lives on a separate registry, unaffected by the retarget:
+
+- [`proj/260810-auto-checker`](https://nightly.quilttest.com/b/quilt-dev/packages/proj/260810-auto-checker) — design and operational documentation
 - [`marketing/ai-security`](https://nightly.quilttest.com/b/quilt-leadership/packages/marketing/ai-security) — related AI security guidance

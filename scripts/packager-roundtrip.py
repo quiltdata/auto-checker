@@ -6,14 +6,25 @@ Exercises the full write path against a scratch package, standalone:
   1. PutObject one small note under the test package's prefix
   2. send a PackagerEvent to the Quilt stack's exported Packager queue
   3. poll until the stack's Packager cuts the new revision
-  4. assert the diff against the prior head is exactly the one file,
-     the metadata round-tripped, and check-commit passes the revision
+  4. assert the diff against the prior head is exactly the one file, the
+     metadata round-tripped, and the revision carries the workflow stamp
 
 Needs AWS credentials with s3:PutObject on the test prefix and
 sqs:SendMessage on the Packager queue. Writes ONLY to the test package.
 Not a pytest; run by hand or from a deploy pipeline:
 
     PYTHONPATH=src python3 scripts/packager-roundtrip.py
+
+The defaults target the open account (s3://protology, Quilt stack
+open-quilt-bio). That registry sets `is_workflow_required` with
+`default_workflow: occurrence`, so the probe sends the two fields the registered
+schema requires and nothing else. A request the registry rejects is invisible
+from here: it surfaces as step 3 timing out, not as an error.
+
+Step 4 checks the write path, not the protocol — a scratch package is not a
+governed one. It asserts the diff, the metadata round-trip, and the workflow
+stamp, the last being the open question about whether the Packager honours the
+registry's default_workflow on a queue-requested write.
 """
 
 from __future__ import annotations
@@ -62,9 +73,9 @@ def head_revision(package: str, registry: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--stack-name", default="quilt-staging", help="Quilt CFN stack with the Packager export")
+    ap.add_argument("--stack-name", default="open-quilt-bio", help="Quilt CFN stack with the Packager export")
     ap.add_argument("--region", default="us-east-1")
-    ap.add_argument("--bucket", default="quilt-ernest-staging")
+    ap.add_argument("--bucket", default="protology")
     ap.add_argument("--package", default="test/check-commit-roundtrip")
     ap.add_argument("--timeout", type=int, default=180, help="seconds to wait for the Packager")
     args = ap.parse_args()
@@ -85,12 +96,19 @@ def main() -> int:
     s3.put_object(Bucket=args.bucket, Key=key, Body=body.encode())
     print(f"put s3://{args.bucket}/{key}")
 
-    delta = f"SET CONTAINS EXACTLY: {logical}. Packager round-trip probe {ts}."
+    # The registry validates every write (is_workflow_required), so the probe's
+    # metadata has to be what the registered schema admits: the two required
+    # fields and nothing else. The retired `author`/`delta` pair this probe used
+    # to send is forbidden by additionalProperties: false, and a rejected
+    # request is invisible from here — it would surface only as the wait below
+    # timing out.
+    metadata = {"related_packages": {}, "status": "active"}
     event = {
         "source_prefix": f"s3://{args.bucket}/{args.package}/",
         "package_name": args.package,
-        "commit_message": f"commit-protocol: packager round-trip probe {ts}",
-        "metadata": {"author": "commit-protocol", "delta": delta},
+        "commit_message": f"commit-protocol: packager round-trip probe {ts}; "
+        f"expected entry-count delta +1",
+        "metadata": metadata,
     }
     boto3.client("sqs", region_name=args.region).send_message(
         QueueUrl=queue_url, MessageBody=json.dumps(event)
@@ -113,12 +131,10 @@ def main() -> int:
 
     # -- verify with check-commit's own machinery ---------------------------
     from check_commit.corpus import PackageHistory
-    from check_commit.engine import Context, run
     from check_commit.policy import POLICY_DIR, Policy
 
     with tempfile.TemporaryDirectory() as tmp:
         history = PackageHistory(args.package, args.bucket, cache_dir=tmp)
-        pairs = history.revisions()
         cur = history.view(new_hash)
         prev = history.view(prev_hash) if prev_hash else None
 
@@ -131,20 +147,24 @@ def main() -> int:
             )
         if logical not in cur.entries:
             failures.append(f"{logical} missing from the committed revision")
-        if (cur.meta or {}).get("author") != "commit-protocol":
-            failures.append(f"metadata author did not round-trip: {cur.meta}")
-        if (cur.meta or {}).get("delta") != delta:
-            failures.append("metadata delta did not round-trip")
+        if (cur.meta or {}) != metadata:
+            failures.append(f"package metadata did not round-trip: {cur.meta}")
 
-        pol = Policy.load(POLICY_DIR / "occurrence.yaml", prefix="occurrence")
-        report = run(prev, cur, Context(history, pairs, online=False, policy=pol))
-        if report.verdict not in ("pass",):
-            failures.append(
-                f"check-commit verdict on the probe revision: {report.verdict} "
-                f"{[(f.check, f.kind) for f in report.findings]}"
-            )
+        # The probe checks the write path, not the protocol: a scratch package
+        # is not a governed one, so the full policy does not apply to it. What
+        # does apply to any revision, and is the open question this probe
+        # answers, is whether the Packager stamped the workflow the registry
+        # declares as its default. An unstamped write means write-back would
+        # raise SelfApplicationFailures on its own revisions.
+        want = Policy.load(POLICY_DIR / "occurrence.yaml", prefix="occurrence").workflow
+        if cur.workflow_id == want:
+            print(f"workflow stamp on committed revision: {want!r}")
         else:
-            print("check-commit verdict on committed revision: PASS")
+            failures.append(
+                f"revision stamped workflow {cur.workflow_id!r}, not the registry's "
+                f"default {want!r}: the Packager does not stamp queue-requested "
+                f"writes, so write-back cannot pass its own workflow-stamp check"
+            )
 
     if failures:
         print("FAIL:")

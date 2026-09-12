@@ -5,15 +5,58 @@ on:
     branches: ["**"]
   pull_request:
 
+# Actions are pinned to full commit SHAs rather than major-version tags. A tag is
+# mutable: repointing `v4` would run replacement code here on every push without
+# a change to this file. The trailing comment records the release each SHA was,
+# so the pin can be read and bumped deliberately.
+
 jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -q
   # The 166-revision backtest (the deploy gate, 04 §8) needs read credentials
   # for the registry bucket; it runs locally / pre-deploy until OIDC is wired.
+
+  # The stack's failure modes are invisible to the unit job: it does not install
+  # aws-cdk-lib, so the CDK assertions skip there. This job installs it, builds
+  # the Lambda asset the stack points at, and checks that the app both
+  # synthesizes and satisfies its template invariants. No AWS credentials: synth
+  # resolves no exports and reaches no account.
+  cdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" -r cdk/requirements.txt
+
+      # Fail loudly on a missing dependency rather than letting the assertions
+      # skip and the job pass green.
+      - name: Check the CDK assertions can actually run
+        run: python -c "import aws_cdk.assertions"
+
+      # The stack reads this directory as its Lambda asset, so synth needs it to
+      # exist. Building it here also keeps scripts/build-lambda.sh from rotting.
+      - name: Build the Lambda asset
+        run: bash scripts/build-lambda.sh
+
+      # Pinned to match cdk/requirements.txt, which holds aws-cdk-lib below
+      # 2.200 because newer libs emit a cloud-assembly schema this CLI cannot
+      # read. The two have to move together.
+      - name: Synthesize the app
+        # Catches errors in stack construction that no unit test sees, which is
+        # how a Duration + Duration TypeError was found during development.
+        # Account and region are explicit in cdk.json and the stack does no
+        # context lookups, so this resolves nothing and needs no credentials.
+        run: npx --yes aws-cdk@2.1118.0 synth --app "python app.py" --quiet
+        working-directory: cdk
+
+      - name: Assert the template invariants
+        run: pytest tests/test_cdk_stack.py -q

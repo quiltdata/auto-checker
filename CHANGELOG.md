@@ -5,6 +5,256 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-10
+
+Retargets the deployment at the governed corpus in `s3://protology`, served by
+the open catalog at <https://open.quiltdata.com>. The checked-in defaults still
+named `quilt-ernest-staging` in account `712023778557`, which is not where the
+corpus lives. See
+[#17](https://github.com/quiltdata/auto-checker/issues/17).
+
+### Changed
+
+- CDK defaults name the open account: `account=867344438354`,
+  `region=us-east-1`, `quiltStackName=open-quilt-bio`,
+  `registryBuckets=protology`. `packagePrefix=occurrence` and
+  `writeBack=false` carry over unchanged. `account` is now defaulted in
+  `cdk.json` rather than left unset, so `cdk deploy` with no `--context` flags
+  targets the intended account instead of whichever one the ambient credentials
+  belong to.
+- A notify-only stack no longer depends on the Packager queue. The
+  `Fn.import_value` calls for `<quiltStackName>-PackagerQueueArn` and
+  `-PackagerQueueUrl` are made only when `writeBack=true`, so the stack deploys
+  against a Quilt stack that does not export them. Previously the import was
+  emitted regardless of whether write-back was enabled, and because
+  `Fn.import_value` is a template-level intrinsic that synth emits unresolved,
+  the failure landed at deployment as CloudFormation's "No export named ...
+  found" — on the one dependency a notify-only deployment has no use for.
+- A notify-only stack is granted no write access. `s3:PutObject` on
+  `{prefix}/*` and `sqs:SendMessage` on the Packager queue are attached only
+  when `writeBack=true`. Read grants (`s3:ListBucket`, `s3:GetObject`,
+  `s3:GetObjectVersion` on `{prefix}/*` and `.quilt/*`) are unchanged. With
+  write-back disabled the Lambda has no use for either grant, and holding them
+  would be granting write access to a governed registry for no reason.
+- `scripts/packager-roundtrip.py` defaults to `--stack-name open-quilt-bio` and
+  `--bucket protology`, and its request is now one the registry admits: the two
+  fields the registered schema requires, instead of the forbidden `author` and
+  `delta` pair. On a validating registry the old payload was rejected outright,
+  and a rejection is invisible from the probe — it surfaces only as the wait for
+  the revision timing out. The verification step asserts the diff, the metadata
+  round-trip, and the workflow stamp rather than running the full `occurrence`
+  policy: a scratch package is not a governed one, so the protocol checks never
+  applied to it, but the stamp is exactly the open Packager question, and this
+  probe is how it gets answered.
+- README documents the deployment context for the open account as a table of
+  context keys and values, notes that the nine `occurrence/*` packages the
+  prefix filter matches include four (`born`, `fixed`, `history`,
+  `transcripts`) the catalog does not index, and points the corpus links at
+  `open.quiltdata.com/b/protology`. The design-documentation links still name
+  `nightly.quilttest.com`, which the retarget does not affect.
+- README records that the two backtest corpora are in different accounts, and
+  states what `~/.cache/check-commit` actually guarantees across a retarget:
+  because entries are bucket-scoped and the revision list is fetched live, the
+  old registry's views cannot be served after the switch.
+
+### Verified
+
+- The Packager queue exports are present in the open account:
+  `open-quilt-bio-PackagerQueueArn` and `open-quilt-bio-PackagerQueueUrl`, both
+  from stack `open-quilt-bio` in `us-east-1`. Write-back has a destination when
+  it is enabled; it stays disabled for the reason below.
+- `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True`
+  with `default_workflow: occurrence`. Unlike `quilt-ernest-staging`, this
+  registry validates every write. The payload itself is not the obstacle — 0.3.0
+  already stopped sending package metadata, and absent metadata preserves the
+  parent's, which validates. What keeps `writeBack=false` is that the Packager's
+  stamping behaviour on a queue-requested write is unverified, and the contract
+  work in [#16](https://github.com/quiltdata/auto-checker/issues/16) has not
+  landed.
+- `check-commit check "quilt+s3://protology#package=occurrence/spec"` runs
+  against the open account from a developer machine: `PASS` at `d2b7cf60a91a`,
+  regime `current`, 12 checks.
+- `check-commit backtest --expectations backtest/expectations-current.yaml`
+  passes against `protology` — 27 revisions, 11 required true positives, 5
+  required false negatives.
+- Both `writeBack` modes synth: notify-only emits no `Fn::ImportValue` and no
+  `s3:PutObject`; `writeBack=true` emits both queue imports and the write
+  grants.
+- CDK is bootstrapped in `867344438354`/`us-east-1` (`CDKToolkit`).
+
+### Fixed
+
+- The event queue's visibility timeout was below the checker's function timeout
+  — 6 minutes against 10 — which Lambda rejects when it creates the event source
+  mapping. Both now derive from one `CHECKER_TIMEOUT` constant, the queue at
+  `VISIBILITY_RETRY_FACTOR` (6) times the function timeout, so they cannot drift
+  apart again. That is 60 minutes of visibility against a 10-minute function.
+
+  Six times, rather than the minimum Lambda enforces, because clearing the
+  minimum only stops the mapping being rejected. With
+  `reserved_concurrent_executions=1` a backlog leaves messages
+  received-but-throttled, and if visibility expires while they wait they are
+  redelivered and their receive count climbs toward `max_receive_count` on
+  throttling alone — dead-lettering sound events during a burst. The wider window
+  costs 3 hours to dead-letter a genuinely poisonous message, which an
+  asynchronous findings pipeline can absorb.
+
+  Both values date from the initial commit, so the stack has never been
+  internally consistent, yet the staging deployment created its mapping without
+  complaint in August. Why it was accepted then and refused now is not something
+  this release establishes — the staging stack was deleted before the failure
+  surfaced, so there is nothing left to inspect. Lambda validates the pair when
+  the mapping is created, not when the function timeout changes, so any
+  deployment carrying an already-created mapping would not have re-checked it.
+
+### Deployed
+
+- `check-commit` in `867344438354`/`us-east-1`, notify-only, against
+  `s3://protology` and the `occurrence/` prefix.
+  - The checker runs in Lambda and logs
+    `{"action": "checked", "detail": "occurrence/spec@d2b7cf60a91a PASS"}` — the
+    policy loads from the bundled asset, the read grants reach `protology`, and
+    `quilt3` works with `HOME=/tmp`.
+  - The ingress path delivers. An `occurrence/spec` `package-revision` event on
+    the default bus passed the rule's `occurrence/` prefix filter, went through
+    SQS, and produced a `checked` outcome in the log. The event was injected
+    with `PutEvents`, not produced by a write to the corpus — see the
+    outstanding criterion below.
+  - The open Quilt stack does emit these events on the default bus, which was
+    previously the unverified assumption behind the rule. `open-quilt-bio` runs
+    its own `BenchlingPackageRevisionRule` on the same bus with the same
+    `com.quiltdata` / `package-revision` pattern, and its target queue has
+    received revision events every day for the past two weeks.
+  - `FindingsTopicArn` has a confirmed email subscription.
+  - The `CheckCommit` namespace is receiving `RevisionsChecked` and `Defects`.
+    Both queues are empty and the DLQ has never held a message.
+
+### Added (testing)
+
+- Template assertions for the CDK stack, `tests/test_cdk_stack.py`, covering the
+  failure classes this stack has actually produced. The visibility-timeout bug
+  above is the motivating case: synth emits a valid template and Lambda rejects
+  the mapping at deploy, so the cheap place to catch it is an assertion on the
+  synthesized template. Both timeout invariants are asserted as relations rather
+  than literals, and each test was checked by reintroducing the bug it covers and
+  confirming it fails.
+- The notify-only contract is now enforced rather than reviewed: no
+  `s3:PutObject`, no `sqs:SendMessage` to the checker's role, no
+  `Fn::ImportValue`, and an empty `PACKAGER_QUEUE_URL` when `writeBack` is off,
+  with the write path reappearing when it is on. Also asserted: object reads
+  scoped to `{prefix}/*` and `.quilt/*`, the write grant scoped to `{prefix}/*`,
+  the event pattern, reserved concurrency of one, and the three alarms.
+
+  Object reads are scoped; listing is not. `s3:ListBucket` is granted on the
+  bucket with no `s3:prefix` condition, so the checker can enumerate every key in
+  the registry, and a test states that rather than leaving the object-read
+  assertion to imply otherwise. Narrowing it means adding a condition covering
+  `{prefix}/*` and `.quilt/*`, which needs deploy-time confirmation that quilt3's
+  own listing still succeeds; that is left as follow-up rather than changed blind
+  against a live registry.
+- A `cdk` CI job that installs `aws-cdk-lib`, builds the Lambda asset, synthesizes
+  the app, and runs those assertions. Synth alone catches a third class the
+  assertions cannot: errors in stack construction, which is how a
+  `Duration + Duration` `TypeError` surfaced while writing the timeout fix.
+  Nothing here needs AWS credentials — account and region are explicit and the
+  stack does no context lookups — so it runs on every push alongside the unit
+  job.
+
+  The assertions skip in the `unit` job, which does not install `aws-cdk-lib`, so
+  the `cdk` job asserts `aws_cdk.assertions` imports before running them. A
+  skipped test must not be able to pass for a green run.
+- The assertions synthesize with the context from `cdk.json`, as the CDK CLI
+  does, rather than against `App()` with none. `App` does not read `cdk.json`, so
+  the first version of these tests asserted only the fallback defaults in
+  `stack.py` — a `cdk.json` that enabled write-back against `protology` left
+  every one of them passing. Two tests now cover the deployment configuration
+  directly: the
+  checked-in context is asserted field by field, and `stack.py`'s fallbacks are
+  required to produce the same template as `cdk.json`, so the two cannot drift
+  into meaning different deployments depending on how the app was invoked.
+- Workflow actions are pinned to full commit SHAs instead of major-version tags,
+  in both jobs. A tag is mutable, so repointing `v4` would run replacement code
+  on every push with no change to the workflow file. Each pin carries the release
+  it was as a comment.
+- The README's deploy commands work. Every one invoked `../.venv-cdk/bin/cdk`,
+  which does not exist: `cdk/requirements.txt` installs the Python construct
+  library, while the CDK CLI is an npm package. All four call sites now run the
+  CLI through `npx` at the version pinned to match `aws-cdk-lib`, with `--app`
+  pointing at the virtualenv interpreter so the app can import `aws_cdk`, and the
+  documented sequence was checked by following it literally from a clean
+  virtualenv.
+- `cdk/app.py` builds its app in `build_app()` rather than at import time, so the
+  `account` and `region` wiring can be asserted. The stack does not read those
+  keys — `app.py` turns them into `env=cdk.Environment(...)` — so asserting
+  cdk.json's contents left the wiring itself uncovered, and deleting it would
+  make the stack environment-agnostic and deploy to whichever account the
+  ambient credentials named. Two tests now synthesize the real app and assert the
+  resulting stack environment; both fail if the wiring is removed. `cdk diff`
+  against the deployed stack is unchanged.
+- README no longer tells operators to subscribe to `SelfApplicationFailuresAlarm`
+  before enabling write-back. The alarms are created with no SNS action —
+  confirmed against the deployed stack, where all three have empty
+  `AlarmActions` — so there is no alarm subscription to confirm. Notification runs
+  through the findings topic, which the handler publishes to directly for
+  defects, engine errors, and self-application failures. The prerequisite now
+  names the topic, and the alarms are described as the CloudWatch view rather
+  than a notification channel. Whether they should also carry an SNS action is a
+  separate question: it would duplicate every message the handler already sends.
+- `cdk/stack.py` resolves its Lambda asset from the module's own location instead
+  of `../build/lambda` relative to the process's working directory, which only
+  resolved when synth ran from `cdk/`. This is what makes the stack constructible
+  from the test suite. The asset hash is content-based, so the template is
+  unchanged and `cdk diff` against the deployed stack reports no differences.
+
+### Outstanding
+
+- No `checked` outcome from an organically written revision. #17 asks for the
+  deployed rule to consume an event emitted by a real `occurrence/*` write, and
+  that has not happened. The two halves are verified separately — the producer
+  emits on the default bus, and the consumer processes an event placed on it —
+  but not joined, so this release does not claim the deployment is verified end
+  to end and #17 should stay open until a real write lands.
+
+### Removed
+
+- The `check-commit` deployment in `712023778557`/`us-east-1`, which had been
+  live since 2026-08-20 watching `quilt-ernest-staging`. Deleted, making this a
+  retarget rather than a second deployment: no `check-commit` stack now checks
+  the pre-migration registry. Both queues were empty and the stack exported
+  nothing, so nothing was lost and nothing depended on it. Its findings topic
+  went with it, along with the confirmed email subscription. The open-account
+  deployment has its own, subscribed via `scripts/sns.py subscribe` and confirmed;
+  see the Deployed section above.
+
+  The `quilt-staging` Quilt stack and its Packager exports are untouched, as is
+  `s3://quilt-ernest-staging` and the pinned pre-migration corpus. The checker's
+  Lambda log group, `/aws/lambda/check-commit-Checker1D892424-WdE6kI9lGrmh`,
+  survives the stack deletion with its run history and no retention policy;
+  delete it separately if that history is not wanted.
+
+### Retained deliberately
+
+- `backtest/expectations.yaml` keeps `registry: s3://quilt-ernest-staging` and
+  its `occurrence/probability@7d74cc22a054` pin. `occurrence/probability` exists
+  on `protology` too, but with a different revision history, so re-pinning would
+  discard the adjudications the corpus records (`spec:issues/closed/030`,
+  [#6](https://github.com/quiltdata/auto-checker/issues/6)) rather than move
+  them. It is the only corpus that exercises the pre-migration checks, and it is
+  reachable only while that registry stays live — which, verified against the
+  staging account, it is: the pointers and the pinned manifest are both present
+  and the full 166-revision backtest passes. Note the bucket is in `us-west-1`,
+  not the `us-east-1` the rest of that account's stacks use.
+
+  A retarget cannot serve stale views from the old registry, contrary to the note
+  in [#17](https://github.com/quiltdata/auto-checker/issues/17): the cache is
+  namespaced by bucket and the revision list is fetched live, so a different
+  registry means a different cache and a re-resolved history.
+- The hardcoded stack ID `check-commit` in `cdk/app.py`.
+  [#9](https://github.com/quiltdata/auto-checker/issues/9) is a collision within
+  one account and region, and with the staging deployment deleted there is one
+  deployment of this stack anywhere. It becomes a prerequisite when a second
+  prefix is governed in the open account, not before.
+
 ## [0.3.0] - 2026-09-10
 
 Re-bases the checker on the current `occurrence` contract. `occurrence/spec`
@@ -167,6 +417,7 @@ every field the old checks read is forbidden rather than merely absent. See
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.1]: https://github.com/quiltdata/auto-checker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/quiltdata/auto-checker/releases/tag/v0.1.0
