@@ -47,9 +47,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def synth(**context) -> Template:
-    app = App(context=context or None)
-    return Template.from_stack(stack_mod.CheckCommitStack(app, "check-commit"))
+CDK_JSON = CDK_DIR / "cdk.json"
+
+
+def checked_in_context() -> dict:
+    """The context `cdk deploy` actually uses, from cdk.json."""
+    return json.loads(CDK_JSON.read_text())["context"]
+
+
+def synth(**overrides) -> Template:
+    """Synthesize with the checked-in context, as the CDK CLI would.
+
+    `App()` does not read cdk.json — the CLI does, and passes it in. Constructing
+    `App` with no context would assert the fallbacks in stack.py rather than the
+    deployment configuration, so a cdk.json that enabled write-back against a
+    governed registry would leave every notify-only assertion below still
+    passing. Overrides win, mirroring `--context` on the command line.
+    """
+    context = {**checked_in_context(), **overrides}
+    return Template.from_stack(stack_mod.CheckCommitStack(App(context=context), "check-commit"))
 
 
 def as_list(value) -> list:
@@ -83,6 +99,41 @@ def policy_actions(template: Template) -> list[str]:
         for statement in pol["Properties"]["PolicyDocument"]["Statement"]:
             actions.extend(as_list(statement.get("Action", [])))
     return actions
+
+
+# -- the checked-in deployment target --------------------------------------
+
+
+def test_cdk_json_targets_the_open_account_notify_only():
+    """cdk.json is what a bare `cdk deploy` uses, so it is worth asserting.
+
+    Retargeting the corpus is the point of this configuration; changing it should
+    be a deliberate edit to this test, not a silent one to cdk.json.
+    """
+    assert checked_in_context() == {
+        "account": "867344438354",
+        "region": "us-east-1",
+        "quiltStackName": "open-quilt-bio",
+        "packagePrefix": "occurrence",
+        "registryBuckets": "protology",
+        "writeBack": "false",
+    }
+
+
+def test_stack_fallbacks_agree_with_the_checked_in_context():
+    """The `or "..."` defaults in stack.py and cdk.json must not drift apart.
+
+    Both are reachable — cdk.json for a normal deploy, the fallbacks when a
+    caller synthesizes the stack without it — so disagreeing would mean two
+    different deployments depending on how the app was invoked.
+    """
+    context = checked_in_context()
+    bare = Template.from_stack(stack_mod.CheckCommitStack(App(), "check-commit"))
+    with_json = synth()
+    assert bare.to_json() == with_json.to_json(), (
+        "stack.py's fallback defaults produce a different template than "
+        f"cdk.json's context {context}"
+    )
 
 
 # -- the bug that broke the first deploy -----------------------------------

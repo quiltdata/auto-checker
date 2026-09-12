@@ -156,6 +156,18 @@ corpus lives. See
   The assertions skip in the `unit` job, which does not install `aws-cdk-lib`, so
   the `cdk` job asserts `aws_cdk.assertions` imports before running them. A
   skipped test must not be able to pass for a green run.
+- The assertions synthesize with the context from `cdk.json`, as the CDK CLI
+  does, rather than against `App()` with none. `App` does not read `cdk.json`, so
+  the first version of these tests asserted only the fallback defaults in
+  `stack.py` — a `cdk.json` that enabled write-back against `protology` left all
+  sixteen passing. Two tests now cover the deployment configuration directly: the
+  checked-in context is asserted field by field, and `stack.py`'s fallbacks are
+  required to produce the same template as `cdk.json`, so the two cannot drift
+  into meaning different deployments depending on how the app was invoked.
+- Workflow actions are pinned to full commit SHAs instead of major-version tags,
+  in both jobs. A tag is mutable, so repointing `v4` would run replacement code
+  on every push with no change to the workflow file. Each pin carries the release
+  it was as a comment.
 - `cdk/stack.py` resolves its Lambda asset from the module's own location instead
   of `../build/lambda` relative to the process's working directory, which only
   resolved when synth ran from `cdk/`. This is what makes the stack constructible
