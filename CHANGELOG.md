@@ -5,6 +5,77 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-12
+
+Recalibrates three checks that reported `defect` for conditions
+`spec:protocol/occurrence.md` does not require. The engine had been treating
+its own preferences as the contract, which cost it standing: of the 11 defects
+outstanding across the nine `occurrence/*` packages, 9 were of this kind, and a
+report that is mostly noise trains its reader to skim.
+
+The test applied to each: can the check cite a section for its severity? The
+spec is deliberate about this. Across 222 lines it uses `MAY` once, `MUST NOT`
+once, `MUST` once, and `SHOULD` once. A check that cannot name the rule it
+enforces does not get to set the verdict.
+
+### Changed
+
+- `key-drift` no longer reports placement inside the registry bucket as a
+  defect. The contract says nothing about physical placement — it speaks only
+  of logical paths — and a Quilt package is a manifest of references, so
+  referencing an object in place instead of copying it under the package prefix
+  is supported use. The class was first met as a botched closure relocation
+  (`auto-checker#12`), and §8 has since removed relocation from the model:
+  "There is no `issues/closed/` relocation for current-model issues... Nothing
+  moves." With nothing relocating, a mismatch no longer evidences a failed
+  move. It is now a note. `foreign-backing` — an entry backed *outside* the
+  registry bucket — stays a defect, because data the registry may be unable to
+  read or keep is a consequence with teeth.
+- `turn-form` severity now tracks §5's wording. The
+  `<issue>.<turn>-<contributor>-<slug>.md` grammar is this document's only
+  `SHOULD`, so `malformed-turn-name` and `wrong-issue-prefix` are
+  known-unresolved. `turn-collision` joins them, which also settles an
+  inconsistency: `policies/occurrence.yaml` already adjudicated six
+  pre-migration collisions as a known-unresolved spec condition citing
+  `issues/closed/030` and `auto-checker#6`, while the current regime was
+  calling the same condition a defect. `numeric-turn-name` stays a defect — §5
+  states flatly that pure numeric filenames "are noncanonical for new turns" —
+  as does `malformed-issue-folder`, since a folder outside `NNN-slug` cannot
+  match the schema's `^issues/[^/]+$` route namespace.
+- `schema-drift` reports notes rather than defects. §2 is five lines: it names
+  the workflow id, gives the registered schema's *unversioned* canonical path,
+  and places one obligation on a package writer — use `workflow="occurrence"`.
+  It does not require a package to vendor its own copy, and it cannot require a
+  revision to have been validated against a particular schema *version*,
+  because the path it names carries none. The line "§2 makes a stale schema a
+  defect in its own right" appeared three times in this repo and zero times in
+  §2; it originated in `auto-checker#12`'s own framing and was quoted into
+  `checks.py` and `policies/occurrence.yaml` as though it were spec text.
+- `registered-schema-drift` moves out of the per-revision checks into
+  `tests/test_registered_schema.py`. Its `paths` was always empty, which was
+  the tell: the comparison is between this repo's vendored copy and a registry
+  object, and neither side is something a package author wrote. A stale
+  vendored copy now fails our build instead of five of someone else's packages.
+- `backtest/expectations-current.yaml` moves `c29849f2` and `fc69cb94` from
+  `must_flag` to `must_not_flag` for `key-drift`, scoped to that check so their
+  other expectations still stand. They are pinned as negatives rather than
+  deleted, so the reversal stays visible in the corpus and a reintroduction of
+  the defect fails the gate.
+
+### Added
+
+- `metadata-shape` validates package metadata against the vendored schema and
+  reports `nonconforming-metadata`, naming the offending field. This is the
+  condition `registered-schema-drift` was standing in for: comparing schema
+  versions declared `born`, `fixed`, `history`, `probability` and `transcripts`
+  defective, while all nine packages in fact conform to the current schema.
+  Asking about conformance answers the question the proxy approximated. It runs
+  only when the hand-rolled §3 checks found nothing, so one fault is not
+  reported twice — those checks name the §3 conditions in the spec's own terms,
+  which is worth more than a validator's message.
+- `jsonschema>=4.0` as an explicit dependency. `quilt3` already pulled it in
+  for its own workflow validation; `check_commit` now imports it directly.
+
 ## [0.3.2] - 2026-09-12
 
 ### Fixed

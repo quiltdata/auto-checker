@@ -45,24 +45,13 @@ must_flag:
     class: header-before-h1
     evidence: 0237777f
 
-  # -- logical/physical key drift --------------------------------------------
-  # Closing 047-050 relocated four dispositions into issues/closed/ in the
-  # manifest while their objects stayed at issues/. Same class as the eight
-  # issues/closed/039* entries recorded in auto-checker#12.
-  c29849f2:
-    checks: [key-drift]
-    class: logical-physical-drift
-
-  # -- the 051 migration, four classes in one revision ----------------------
-  # Two turns relocated logical-only (001.md, 002.md still backed at
-  # issues/051aO-... and issues/051bP-...), three turns landed with pure
-  # numeric filenames, two issue READMEs were created header-first, and
-  # protocol/occurrence.md fell 29206 -> 7142 bytes with no reduction named in
-  # the commit message.
-  fc69cb94-key-drift:
-    hash: fc69cb94
-    checks: [key-drift]
-    class: logical-physical-drift
+  # -- the 051 migration, three classes in one revision ---------------------
+  # Three turns landed with pure numeric filenames, two issue READMEs were
+  # created header-first, and protocol/occurrence.md fell 29206 -> 7142 bytes
+  # with no reduction named in the commit message. Two turns were also
+  # relocated logical-only (001.md, 002.md still backed at issues/051aO-...
+  # and issues/051bP-...); that class is no longer a defect — see
+  # must_not_flag below.
   fc69cb94-turn-form:
     hash: fc69cb94
     checks: [turn-form]
@@ -91,3 +80,28 @@ must_not_flag:
   - hash: 6f0d11f5  # protocol cleanup, -6 entries, declared and arithmetic
   - hash: ec34d58a  # no-op metadata verification
   - hash: 22e898df  # turn filenames made human-readable, net zero
+
+  # -- logical/physical placement is not a defect ---------------------------
+  # These two revisions formerly stood as must_flag for
+  # key-drift/logical-physical-drift, and now assert the opposite. Closing
+  # 047-050 (c29849f2) relocated four dispositions into issues/closed/ in the
+  # manifest while their objects stayed at issues/; the 051 migration
+  # (fc69cb94) did the same for two turns.
+  #
+  # The contract says nothing about physical placement — it speaks only of
+  # logical paths — and a Quilt package is a manifest of references, so
+  # referencing an object in place is supported use rather than a fault. The
+  # class was originally met as a botched closure relocation (auto-checker#12),
+  # and §8 has since removed relocation from the model: "There is no
+  # issues/closed/ relocation for current-model issues... Nothing moves."
+  # With nothing relocating, a mismatch no longer evidences a failed move.
+  #
+  # They are pinned here rather than deleted so the reversal stays visible and
+  # a reintroduction of the defect fails the gate. The observation survives as
+  # a note; only the verdict is gone.
+  - hash: c29849f2
+    checks: [key-drift]
+    class: logical-physical-placement-is-not-a-defect
+  - hash: fc69cb94
+    checks: [key-drift]
+    class: logical-physical-placement-is-not-a-defect

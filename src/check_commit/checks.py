@@ -246,6 +246,49 @@ def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
                 f"additionalProperties: false",
             )
         )
+    # The checks above name the §3 conditions in the spec's own terms, which is
+    # worth more than a validator's message. Everything else the schema says —
+    # value types, the route-key pattern, the shape of related_packages — is
+    # checked by validating against it, as a backstop when nothing above fired
+    # so a single fault is not reported twice.
+    #
+    # This is what `schema-drift/registered-schema-drift` was standing in for.
+    # Comparing schema *versions* declared five packages defective while all
+    # nine conformed; asking whether the metadata conforms answers the question
+    # the proxy was approximating, and names the offending field when it fails.
+    if not findings:
+        findings.extend(_schema_violations(cur, ctx))
+    return findings
+
+
+def _schema_violations(cur, ctx) -> list[Finding]:
+    pol = ctx.policy
+    if not pol.vendored_schema:
+        return []
+    try:
+        import jsonschema
+    except ImportError:
+        ctx.note("metadata-shape: jsonschema unavailable, conformance unverified")
+        return []
+    try:
+        schema = json.loads(pol.vendored_schema_path.read_text())
+    except (OSError, ValueError) as exc:
+        ctx.note(f"metadata-shape: could not read the vendored schema ({exc})")
+        return []
+    validator = jsonschema.Draft202012Validator(schema)
+    findings = []
+    for err in sorted(validator.iter_errors(cur.meta or {}), key=lambda e: list(e.path)):
+        where = "/".join(str(p) for p in err.path) or "(root)"
+        findings.append(
+            Finding(
+                check="metadata-shape",
+                severity=DEFECT,
+                kind="nonconforming-metadata",
+                paths=(),
+                detail=f"package metadata does not satisfy the registered schema at "
+                f"{where}: {err.message}",
+            )
+        )
     return findings
 
 
@@ -406,20 +449,28 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
         base = posixpath.basename(path)
         if base == "README.md" or path != f"{folder}/{base}":
             continue  # the one unnumbered entry, or a nested non-turn artifact
+        # §5 states the turn filename form as this document's only SHOULD, in
+        # a document that otherwise reaches for MAY, MUST NOT and MUST exactly
+        # once each. Severity follows that distinction: the issue-folder form
+        # and the noncanonical-numeric rule are stated flatly and stay defects;
+        # departures from the filename grammar are recorded as known-unresolved.
         parts = policy.turn_parts(base)
         if parts is None:
             numeric = policy.NUMERIC_TURN_RE.match(base)
             findings.append(
                 Finding(
                     check="turn-form",
-                    severity=DEFECT,
+                    # "Pure numeric filenames such as `001.md` are noncanonical
+                    # for new turns" is flat; the filename form is a SHOULD.
+                    severity=DEFECT if numeric else KNOWN_UNRESOLVED,
                     kind="numeric-turn-name" if numeric else "malformed-turn-name",
                     paths=(path,),
                     detail=(
                         "pure numeric turn filename; §5 makes these noncanonical for "
                         "new turns, which take <issue>.<turn>-<contributor>-<slug>.md"
                         if numeric
-                        else "turn filename is not <issue>.<turn>-<contributor>-<slug>.md (§5)"
+                        else "turn filename is not <issue>.<turn>-<contributor>-<slug>.md; "
+                        "§5 states that form as a SHOULD, so this is recorded, not faulted"
                     ),
                 )
             )
@@ -430,11 +481,12 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
             findings.append(
                 Finding(
                     check="turn-form",
-                    severity=DEFECT,
+                    severity=KNOWN_UNRESOLVED,
                     kind="wrong-issue-prefix",
                     paths=(path,),
                     detail=f"turn names issue {issue} but sits in {folder}; §5 has the "
-                    f"issue component repeat the containing issue identifier",
+                    f"issue component repeat the containing issue identifier, within a "
+                    f"filename form it states as a SHOULD",
                 )
             )
         for other in sorted(cur.entries):
@@ -444,12 +496,19 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
             if oparts and int(oparts[1]) == int(turn):
                 findings.append(
                     Finding(
+                        # The prefix already adjudicated this class as a
+                        # known-unresolved spec condition rather than a fault of
+                        # either writer, in issues/closed/030 and
+                        # auto-checker#6 — see `adjudicated_collisions` in
+                        # policies/occurrence.yaml. The current regime is held
+                        # to the same ruling.
                         check="turn-form",
-                        severity=DEFECT,
+                        severity=KNOWN_UNRESOLVED,
                         kind="turn-collision",
                         paths=(path, other),
                         detail=f"turn {turn} already taken in {folder}; §5 makes the "
-                        f"highest turn number the end of the issue sequence",
+                        f"highest turn number the end of the issue sequence, so the "
+                        f"sequence position is ambiguous",
                     )
                 )
     return findings
@@ -593,7 +652,24 @@ def check_pinned_citation(prev, cur, ctx) -> list[Finding]:
     return findings
 
 
-# -- logical keys are backed at their own physical path ---------------------
+# -- entries are backed inside the registry bucket --------------------------
+#
+# What this check may assert is bounded by what the contract says, and
+# spec:protocol/occurrence.md says nothing about physical placement: it speaks
+# only of logical paths. A Quilt package is a manifest of references, and
+# referencing an object in place — rather than copying it under the package
+# prefix — is ordinary, supported use. So an entry backed at some other key
+# inside the registry bucket is an observation, recorded as a note, not a
+# defect. It was flagged as one because the class was first met as a botched
+# closure relocation (auto-checker#12, and c29849f2/fc69cb94 in the current
+# corpus), and §8 has since removed relocation from the model entirely:
+# "There is no issues/closed/ relocation for current-model issues... Nothing
+# moves." With nothing relocating, a mismatch no longer evidences a failed
+# move.
+#
+# Backing *outside* the registry bucket stays a defect. That is data the
+# registry may be unable to read or keep, which is a consequence with teeth
+# rather than a naming preference.
 
 def _physical_path(physical_key: str):
     """(bucket, key) of an s3 physical key, ignoring the version query.
@@ -633,15 +709,10 @@ def check_key_drift(prev, cur, ctx) -> list[Finding]:
             )
             continue
         if not key.endswith(f"/{ctx.package}/{path}"):
-            findings.append(
-                Finding(
-                    check="key-drift",
-                    severity=DEFECT,
-                    kind="logical-physical-drift",
-                    paths=(path,),
-                    detail=f"logical key was written but its object still lives at "
-                    f"{key.lstrip('/')!r}: the relocation is logical-only",
-                )
+            ctx.note(
+                f"key-drift: {path} is backed at {key.lstrip('/')!r} rather than at "
+                f"its own logical path. In-bucket, version-pinned, and permitted — "
+                f"the contract governs logical paths only"
             )
     return findings
 
@@ -658,6 +729,27 @@ def _load_json(data: bytes | None):
 
 
 def check_schema_drift(prev, cur, ctx) -> list[Finding]:
+    """Report on copies of the workflow schema, without asserting §2 requires them.
+
+    §2 is five lines. It names the workflow id, gives the registered schema's
+    *unversioned* canonical path, and places exactly one obligation on a
+    package writer: use `workflow="occurrence"`. It does not require a package
+    to vendor its own copy of the schema, and it cannot require a revision to
+    have been validated against any particular schema *version*, because the
+    path it names carries no version.
+
+    The line "§2 makes a stale schema a defect in its own right" is not in §2.
+    It originates in auto-checker#12's own framing and was quoted into this
+    file as though it were spec text. So the comparisons below are notes.
+
+    Two duties moved out of here rather than being dropped:
+      - the vendored copy tracking the registered object is a fact about *this
+        repo*, checked in CI (tests/test_registered_schema.py), where its
+        `paths: []` finding was really pointing all along;
+      - whether metadata actually satisfies the schema is checked by
+        `metadata-shape`, which validates against it instead of inferring
+        conformance from version equality.
+    """
     pol = ctx.policy
     if not pol.vendored_schema:
         return []
@@ -673,15 +765,9 @@ def check_schema_drift(prev, cur, ctx) -> list[Finding]:
         and pol.package_schema_path in prev.entries
         and pol.package_schema_path not in cur.entries
     ):
-        findings.append(
-            Finding(
-                check="schema-drift",
-                severity=DEFECT,
-                kind="schema-removed",
-                paths=(pol.package_schema_path,),
-                detail=f"the package's copy of the registered schema was deleted; §2 "
-                f"makes the package's own record of its contract part of the contract",
-            )
+        ctx.note(
+            f"schema-drift: {pol.package_schema_path} was deleted. §2 does not "
+            f"require a package to carry its own copy of the registered schema"
         )
     elif pol.package_schema_path and pol.package_schema_path in cur.entries:
         in_package = _load_json(ctx.content(cur, pol.package_schema_path))
@@ -696,35 +782,28 @@ def check_schema_drift(prev, cur, ctx) -> list[Finding]:
                 )
             )
         elif in_package != vendored:
-            findings.append(
-                Finding(
-                    check="schema-drift",
-                    severity=DEFECT,
-                    kind="package-schema-drift",
-                    paths=(pol.package_schema_path,),
-                    detail=f"the package's {pol.package_schema_path} differs from the "
-                    f"schema vendored at policies/{pol.vendored_schema}; §2 makes a "
-                    f"stale schema a defect in its own right",
-                )
+            ctx.note(
+                f"schema-drift: the package's {pol.package_schema_path} differs from "
+                f"policies/{pol.vendored_schema}. §2 requires neither the copy nor "
+                f"that it track any particular version"
             )
 
-    # The stamp names the exact registered schema object this revision was
-    # validated against, version included — a better source than any constant.
+    # The stamp names the schema *version* this revision was validated against.
+    # A revision stamped an older version was validated against the rules of
+    # its day, which is not a defect its author committed — §2 names an
+    # unversioned path, so "the registered schema" can only mean the current
+    # one. What matters is whether the metadata satisfies today's schema, and
+    # `metadata-shape` answers that directly.
     uri = ((cur.workflow or {}).get("schemas") or {}).get(pol.workflow)
     if uri and ctx.online:
         registered = _load_json(ctx.read_s3_uri(uri))
         if registered is None:
             ctx.note(f"schema-drift: could not fetch the registered schema at {uri}")
         elif registered != vendored:
-            findings.append(
-                Finding(
-                    check="schema-drift",
-                    severity=DEFECT,
-                    kind="registered-schema-drift",
-                    paths=(),
-                    detail=f"the registered schema at {uri} differs from the schema "
-                    f"vendored at policies/{pol.vendored_schema}",
-                )
+            ctx.note(
+                f"schema-drift: this revision was validated against {uri}, which is "
+                f"not the schema vendored at policies/{pol.vendored_schema}; see "
+                f"metadata-shape for whether the metadata satisfies the current one"
             )
     elif uri:
         ctx.note(f"schema-drift: offline, registered schema at {uri} unverified")
