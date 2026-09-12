@@ -168,6 +168,21 @@ corpus lives. See
   in both jobs. A tag is mutable, so repointing `v4` would run replacement code
   on every push with no change to the workflow file. Each pin carries the release
   it was as a comment.
+- The README's deploy commands work. Every one invoked `../.venv-cdk/bin/cdk`,
+  which does not exist: `cdk/requirements.txt` installs the Python construct
+  library, while the CDK CLI is an npm package. All four call sites now run the
+  CLI through `npx` at the version pinned to match `aws-cdk-lib`, with `--app`
+  pointing at the virtualenv interpreter so the app can import `aws_cdk`, and the
+  documented sequence was checked by following it literally from a clean
+  virtualenv.
+- `cdk/app.py` builds its app in `build_app()` rather than at import time, so the
+  `account` and `region` wiring can be asserted. The stack does not read those
+  keys — `app.py` turns them into `env=cdk.Environment(...)` — so asserting
+  cdk.json's contents left the wiring itself uncovered, and deleting it would
+  make the stack environment-agnostic and deploy to whichever account the
+  ambient credentials named. Two tests now synthesize the real app and assert the
+  resulting stack environment; both fail if the wiring is removed. `cdk diff`
+  against the deployed stack is unchanged.
 - README no longer tells operators to subscribe to `SelfApplicationFailuresAlarm`
   before enabling write-back. The alarms are created with no SNS action —
   confirmed against the deployed stack, where all three have empty

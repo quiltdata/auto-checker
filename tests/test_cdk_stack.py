@@ -39,6 +39,7 @@ if str(CDK_DIR) not in sys.path:
 from aws_cdk import App  # noqa: E402
 from aws_cdk.assertions import Template  # noqa: E402
 
+import app as app_mod  # noqa: E402
 import stack as stack_mod  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -118,6 +119,30 @@ def test_cdk_json_targets_the_open_account_notify_only():
         "registryBuckets": "protology",
         "writeBack": "false",
     }
+
+
+def test_the_app_targets_that_account_and_region():
+    """Asserted through the real app, not the stack in isolation.
+
+    The stack does not read `account` or `region`; `app.py` turns them into
+    `env=cdk.Environment(...)`. Asserting only cdk.json's contents would leave
+    that wiring uncovered, and removing it makes the stack environment-agnostic —
+    it would deploy to whichever account the ambient credentials name, which is
+    the failure pinning `account` exists to prevent.
+    """
+    assembly = app_mod.build_app(context=checked_in_context()).synth()
+    env = assembly.get_stack_by_name("check-commit").environment
+    assert (env.account, env.region) == ("867344438354", "us-east-1")
+
+
+def test_the_app_is_not_environment_agnostic():
+    """An unknown account is what "deploys wherever the credentials point" looks
+    like in the synthesized assembly, so name it rather than trust the test above
+    to notice."""
+    assembly = app_mod.build_app(context=checked_in_context()).synth()
+    env = assembly.get_stack_by_name("check-commit").environment
+    assert "unknown-account" not in env.account
+    assert "unknown-region" not in env.region
 
 
 def test_stack_fallbacks_agree_with_the_checked_in_context():

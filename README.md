@@ -187,8 +187,13 @@ bash scripts/build-lambda.sh
 
 python3 -m venv .venv-cdk
 .venv-cdk/bin/pip install -r cdk/requirements.txt
+```
 
-(cd cdk && ../.venv-cdk/bin/cdk deploy \
+`cdk/requirements.txt` provides the Python construct library. The CDK CLI is a separate npm package, so run it with `npx` and point `--app` at the virtualenv's interpreter so the app can import `aws_cdk`:
+
+```bash
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
@@ -197,10 +202,12 @@ python3 -m venv .venv-cdk
   --context writeBack=true)
 ```
 
-Every one of those keys is defaulted in `cdk/cdk.json`, so a deployment of the `occurrence` corpus described above is just:
+The CLI version is pinned deliberately: `cdk/requirements.txt` holds `aws-cdk-lib` below 2.200 because newer versions emit a cloud-assembly schema this CLI cannot read, so the two move together. A globally installed `cdk` of a compatible version works just as well.
+
+Every context key above is defaulted in `cdk/cdk.json`, so a deployment of the `occurrence` corpus described above is just:
 
 ```bash
-(cd cdk && ../.venv-cdk/bin/cdk deploy)
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy --app "../.venv-cdk/bin/python app.py")
 ```
 
 This creates:
@@ -221,7 +228,8 @@ The CDK app currently uses the stack ID `check-commit`. To deploy more than one 
 To check and alert without writing responses, deploy with:
 
 ```bash
-(cd cdk && ../.venv-cdk/bin/cdk deploy --context writeBack=false ...)
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" --context writeBack=false ...)
 ```
 
 Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
@@ -306,7 +314,8 @@ After changing a prefix policy:
 ```bash
 pytest -q
 bash scripts/build-lambda.sh
-(cd cdk && ../.venv-cdk/bin/cdk deploy \
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
+  --app "../.venv-cdk/bin/python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
