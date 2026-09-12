@@ -255,8 +255,11 @@ def test_write_back_grants_the_write_path():
 # -- permissions stay scoped to the governed prefix (04 §7) ----------------
 
 
-def test_read_grants_are_scoped_to_the_prefix_and_dot_quilt():
-    """Not bucket-wide: the checker reads the governed prefix and .quilt only."""
+def test_object_reads_are_scoped_to_the_prefix_and_dot_quilt():
+    """Object reads reach the governed prefix and .quilt, and nothing else.
+
+    Scoped to GetObject/GetObjectVersion. Listing is broader; see the test below.
+    """
     template = synth(registryBuckets="reg-one", packagePrefix="myprefix")
     resources = []
     for pol in template.find_resources("AWS::IAM::Policy").values():
@@ -267,6 +270,29 @@ def test_read_grants_are_scoped_to_the_prefix_and_dot_quilt():
         "arn:aws:s3:::reg-one/.quilt/*",
         "arn:aws:s3:::reg-one/myprefix/*",
     ]
+
+
+def test_listing_is_bucket_wide_and_that_is_recorded_not_asserted_away():
+    """`s3:ListBucket` carries no `s3:prefix` condition, so the checker can
+    enumerate every key in the registry bucket, not just the governed prefix.
+
+    Object reads are scoped; listing is not. This test states the gap rather than
+    letting the scoping test above imply it does not exist. Narrowing it means
+    adding an `s3:prefix` condition covering `{prefix}/*` and `.quilt/*`, which
+    needs deploy-time confirmation that quilt3's own listing still succeeds —
+    tracked separately rather than changed blind against a live registry.
+    """
+    template = synth(registryBuckets="reg-one", packagePrefix="myprefix")
+    for pol in template.find_resources("AWS::IAM::Policy").values():
+        for statement in pol["Properties"]["PolicyDocument"]["Statement"]:
+            if "s3:ListBucket" in as_list(statement.get("Action", [])):
+                assert as_list(statement["Resource"]) == ["arn:aws:s3:::reg-one"]
+                assert "Condition" not in statement, (
+                    "a condition appeared on ListBucket: if the prefix scoping "
+                    "was tightened, assert the allowed prefixes here instead"
+                )
+                return
+    pytest.fail("no s3:ListBucket statement found")
 
 
 def test_write_grant_is_scoped_to_the_prefix():

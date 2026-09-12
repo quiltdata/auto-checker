@@ -141,10 +141,17 @@ corpus lives. See
 - The notify-only contract is now enforced rather than reviewed: no
   `s3:PutObject`, no `sqs:SendMessage` to the checker's role, no
   `Fn::ImportValue`, and an empty `PACKAGER_QUEUE_URL` when `writeBack` is off,
-  with the write path reappearing when it is on. Also asserted: read grants
-  scoped to `{prefix}/*` and `.quilt/*` rather than bucket-wide, the write grant
-  scoped to `{prefix}/*`, the event pattern, reserved concurrency of one, and the
-  three alarms.
+  with the write path reappearing when it is on. Also asserted: object reads
+  scoped to `{prefix}/*` and `.quilt/*`, the write grant scoped to `{prefix}/*`,
+  the event pattern, reserved concurrency of one, and the three alarms.
+
+  Object reads are scoped; listing is not. `s3:ListBucket` is granted on the
+  bucket with no `s3:prefix` condition, so the checker can enumerate every key in
+  the registry, and a test states that rather than leaving the object-read
+  assertion to imply otherwise. Narrowing it means adding a condition covering
+  `{prefix}/*` and `.quilt/*`, which needs deploy-time confirmation that quilt3's
+  own listing still succeeds; that is left as follow-up rather than changed blind
+  against a live registry.
 - A `cdk` CI job that installs `aws-cdk-lib`, builds the Lambda asset, synthesizes
   the app, and runs those assertions. Synth alone catches a third class the
   assertions cannot: errors in stack construction, which is how a
@@ -160,7 +167,8 @@ corpus lives. See
   does, rather than against `App()` with none. `App` does not read `cdk.json`, so
   the first version of these tests asserted only the fallback defaults in
   `stack.py` — a `cdk.json` that enabled write-back against `protology` left all
-  sixteen passing. Two tests now cover the deployment configuration directly: the
+  every one of them passing. Two tests now cover the deployment configuration
+  directly: the
   checked-in context is asserted field by field, and `stack.py`'s fallbacks are
   required to produce the same template as `cdk.json`, so the two cannot drift
   into meaning different deployments depending on how the app was invoked.
