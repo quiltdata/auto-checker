@@ -5,6 +5,232 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-12
+
+One manifest may sit under several pointers, and three places reasoned about
+revisions by counting list entries instead. Re-publishing identical content
+reuses the content hash and takes a fresh pointer, so a revision list can name
+the same top hash twice; `occurrence/theory` does it seven times.
+
+The first of these reported a defect against a correct write. `occurrence/theory`
+repaired the stale Issue 068 route at `1bcd7e01` — the repair 0.3.4's §5
+amendment had made visible — and the checker answered with
+`uri-resolution/unresolvable-pin` on a citation that gives the full 64-character
+hash of a revision that plainly exists.
+
+### Fixed
+
+- A citation to a re-published manifest resolves. `Context.resolve_same_package`
+  counted matching pointer entries, so two pointers naming one manifest looked
+  like an ambiguous prefix and the pin read as a revision that does not exist.
+  Ambiguity now means more than one *distinct* top hash, which is what the guard
+  was for: a short hash that could mean two different revisions still resolves
+  to neither.
+- `PackageHistory.find_revision` and the CLI's `@<hash>` selection had the same
+  fault. Where several pointers name one manifest they now choose the earliest —
+  the publication that introduced the content, whose message describes the change
+  and whose parent is the previous distinct manifest. That is also what
+  `lambda_handler.handle_detail` picks, so `check-commit check @<hash>`
+  reproduces what the deployment reported rather than quietly diverging from it.
+- The backtest pin resolves to its last occurrence, so a corpus runs up to and
+  including the pin's final publication.
+- `entry-count` makes no claim about a re-publication. A re-published manifest
+  carries the commit message of the write it re-publishes, and that message's
+  entry-count claim was about that write; reading it against a diff of nothing
+  faulted a correct message. The engine's re-publication note carries the
+  explanation instead.
+
+## [0.3.4] - 2026-09-12
+
+Three changes to what a person receives, and one silent enforcement hole closed
+by the first of them.
+
+### Changed
+
+- `spec:protocol/occurrence.md` §5 now admits an annotated `Status`. It said
+  "Status is exactly `open | closed`" while three packages were writing a state
+  token followed by a running summary — `open — q10 finite classicality
+  unresolved`, `closed and promoted`, `**closed** — promoted as Theory 43`. The
+  rule moved rather than the practice, because the annotation carries real loop
+  state and the flat reading was also costing enforcement. §5 now specifies a
+  state token, exactly `open` or `closed`, optionally followed by an advisory
+  annotation carrying no protocol meaning, with two rules a reader must honour:
+  emphasis around the token is ignored, and a `closed` appearing later in the
+  annotation is not a closure, since `open — q9 closed through 021.29` is open.
+  Filed as `occurrence/spec@1219604c`.
+- `_issue_status` parses the leading token instead of comparing the whole field
+  to `"closed"`. That comparison was a silent hole: an annotated closure read as
+  neither state, so `issue-routes/route-survives-closure` stopped firing on
+  exactly the issues that had been closed. `occurrence/theory` Issue 068 is
+  `closed and promoted`, closed since 2026-09-08 with provenance, still routed,
+  and was reported by nothing — `bad-status` did not fire either, because it
+  only inspects READMEs the revision changed. It is now reported.
+  `issue-readme/bad-status` keeps the strict reading and faults a leading token
+  that is not exactly `open` or `closed`, so a miscased `Closed` is still called
+  out while its closure obligations still bind.
+- The findings topic carries prose. SNS email delivery is plain text, so what a
+  subscriber received was the report's JSON — `detail`, the one field carrying a
+  finding's substance, arrived nested deepest with every em dash escaped to
+  `\u2014`. Notifications now render through `policies/<prefix>-notify.md`, the
+  same template seam `compose` uses, with defects, known-unresolved and notes in
+  separate sections and a catalog link to the revision. The JSON is not lost:
+  `lambda_handler` prints it to CloudWatch, where a machine consumer belongs.
+- `Report.to_json` sets `ensure_ascii=False`. The reports quote package prose,
+  which is full of em dashes, section signs and accented characters; escaping
+  them made the human-readable field the least readable part of the output.
+
+### Added
+
+- A note when a revision re-publishes an identical manifest. Two pointers may
+  name one top hash, and `occurrence/theory` has six such pairs. The revision
+  then has nothing to compare against, so every diff-scoped check is a no-op —
+  a true reading of a no-op re-push, but `prev_tophash` equal to `tophash` would
+  otherwise leave a reader thinking a comparison had happened. Only the
+  whole-state checks apply, and the report now says so.
+
+## [0.3.3] - 2026-09-12
+
+Recalibrates three checks that reported `defect` for conditions
+`spec:protocol/occurrence.md` does not require. The engine had been treating
+its own preferences as the contract, which cost it standing: of the 11 defects
+outstanding across the nine `occurrence/*` packages, 9 were of this kind, and a
+report that is mostly noise trains its reader to skim.
+
+The test applied to each: can the check cite a section for its severity? The
+spec is deliberate about this. Across 222 lines it uses `MAY` once, `MUST NOT`
+once, `MUST` once, and `SHOULD` once. A check that cannot name the rule it
+enforces does not get to set the verdict.
+
+### Changed
+
+- `key-drift` no longer reports placement inside the registry bucket as a
+  defect. The contract says nothing about physical placement — it speaks only
+  of logical paths — and a Quilt package is a manifest of references, so
+  referencing an object in place instead of copying it under the package prefix
+  is supported use. The class was first met as a botched closure relocation
+  (`auto-checker#12`), and §8 has since removed relocation from the model:
+  "There is no `issues/closed/` relocation for current-model issues... Nothing
+  moves." With nothing relocating, a mismatch no longer evidences a failed
+  move. It is now a note. `foreign-backing` — an entry backed *outside* the
+  registry bucket — stays a defect, because data the registry may be unable to
+  read or keep is a consequence with teeth.
+- `turn-form` severity now tracks §5's wording. The
+  `<issue>.<turn>-<contributor>-<slug>.md` grammar is this document's only
+  `SHOULD`, so `malformed-turn-name` and `wrong-issue-prefix` are
+  known-unresolved. `turn-collision` joins them, which also settles an
+  inconsistency: `policies/occurrence.yaml` already adjudicated six
+  pre-migration collisions as a known-unresolved spec condition citing
+  `issues/closed/030` and `auto-checker#6`, while the current regime was
+  calling the same condition a defect. `numeric-turn-name` stays a defect — §5
+  states flatly that pure numeric filenames "are noncanonical for new turns" —
+  as does `malformed-issue-folder`, since a folder outside `NNN-slug` cannot
+  match the schema's `^issues/[^/]+$` route namespace.
+- `schema-drift` reports notes rather than defects. §2 is five lines: it names
+  the workflow id, gives the registered schema's *unversioned* canonical path,
+  and places one obligation on a package writer — use `workflow="occurrence"`.
+  It does not require a package to vendor its own copy, and it cannot require a
+  revision to have been validated against a particular schema *version*,
+  because the path it names carries none. The line "§2 makes a stale schema a
+  defect in its own right" appeared three times in this repo and zero times in
+  §2; it originated in `auto-checker#12`'s own framing and was quoted into
+  `checks.py` and `policies/occurrence.yaml` as though it were spec text.
+- `registered-schema-drift` moves out of the per-revision checks into
+  `tests/test_registered_schema.py`. Its `paths` was always empty, which was
+  the tell: the comparison is between this repo's vendored copy and a registry
+  object, and neither side is something a package author wrote. A stale
+  vendored copy now fails our build instead of five of someone else's packages.
+- `backtest/expectations-current.yaml` moves `c29849f2` and `fc69cb94` from
+  `must_flag` to `must_not_flag` for `key-drift`, scoped to that check so their
+  other expectations still stand. They are pinned as negatives rather than
+  deleted, so the reversal stays visible in the corpus and a reintroduction of
+  the defect fails the gate.
+
+### Added
+
+- `metadata-shape` validates package metadata against the vendored schema and
+  reports `nonconforming-metadata`, naming the offending field. This is the
+  condition `registered-schema-drift` was standing in for: comparing schema
+  versions declared `born`, `fixed`, `history`, `probability` and `transcripts`
+  defective, while all nine packages in fact conform to the current schema.
+  Asking about conformance answers the question the proxy approximated. It runs
+  only when the hand-rolled §3 checks found nothing, so one fault is not
+  reported twice — those checks name the §3 conditions in the spec's own terms,
+  which is worth more than a validator's message.
+- `jsonschema>=4.0` as an explicit dependency. `quilt3` already pulled it in
+  for its own workflow validation; `check_commit` now imports it directly.
+
+## [0.3.2] - 2026-09-12
+
+### Fixed
+
+- Two false-positive classes that fired on conditions no package author
+  created. Both were found by running the engine against every `occurrence/*`
+  package in `s3://protology` rather than one revision.
+- A change of digest algorithm is no longer read as content mutation.
+  `Entry` recorded a manifest hash's value but not its type, so when the
+  registry moved `occurrence/gpt` from `CRC64NVME` to `sha2-256-chunked`
+  between revisions, every digest differed and `diff()` reported all 149
+  entries as changed. That produced 68 bogus
+  `turn-immutability/turn-mutated` defects on identical byte counts, and
+  swept every content-scanning check across the whole package, adding 99
+  `pinned-citation/unpinned-citation` and 6 `uri-resolution/missing-path`
+  findings for text nobody had touched. `Entry` now carries `hash_type` and
+  `Entry.same_content_as` returns a tri-state: comparable digests settle
+  content identity, and when the algorithms differ a pinned S3 object
+  version settles it instead, since an object version is immutable.
+  `diff()` still counts an undecidable comparison as changed so the content
+  checks re-read the file; `check_turn_immutability`, the one check where a
+  change is itself the violation, asks `RevisionView.content_changed` for
+  the tri-state and reports the undecidable case as
+  `known-unresolved/incomparable-turn-digest` rather than asserting a
+  mutation it cannot see. Cached views bump to schema 3.
+- A percent-encoded physical key is no longer read as a logical-only
+  relocation. A physical key is a URI, so a logical key containing a space
+  or a non-ASCII character arrives as `%20` or `%C3%A9`; `key-drift`
+  compared that URI against the raw logical key and flagged the mismatch.
+  All 14 `key-drift/logical-physical-drift` defects on `occurrence/born`
+  were this artifact — `04a-précis.md`, `archive/GOLDEN STRATUM.md` and
+  eleven others. `_physical_path` now decodes the path before comparing, so
+  the comparison is on S3 key names rather than on URIs, and the detail
+  reports the key S3 actually holds. `PackageHistory.read_s3_uri` had the
+  same assumption and would 404 on those keys, making their content read as
+  unresolvable; it decodes too.
+
+### Changed
+
+- `scripts/build-lambda.sh` verifies the built asset against `src/check_commit`
+  and refuses to ship one that diverges, and clears setuptools' `build/lib`
+  staging directory first. `build_py` copies a source file only when it is newer
+  than the staged copy, so a stale staging directory can quietly package an old
+  module; nothing had caught this because `cdk diff` compares asset hashes, and a
+  consistently wrong asset hashes consistently. The same comparison runs as a
+  test in the `cdk` CI job, which builds the asset.
+
+  This is hardening, not a fix for an observed incident. The deployed asset did
+  match `main`; what it did not match was a working tree carrying the engine
+  fixes above, which is a normal state and not a build fault. The check exists
+  because that distinction cost an hour to establish by hand.
+
+### Operational
+
+- The deployment in `867344438354` was running the pre-fix engine, so the false
+  positives above were live: across 53 organic revisions it reported inflated
+  counts — 176 findings on `occurrence/gpt@60b22ac6` where the fixed engine
+  reports 13 — and published each defect-bearing revision to the findings topic.
+  Those notifications were largely artifact. Redeploying on this release is what
+  clears them.
+- Organic `package-revision` delivery is confirmed, which was the last acceptance
+  item open on [#17](https://github.com/quiltdata/auto-checker/issues/17):
+  `occurrence/gpt`, `occurrence/outcome` and `occurrence/theory` writes reached
+  the deployed rule and were checked, with no engine errors and nothing
+  dead-lettered. Four of 53 revisions were delivered twice, which is SQS
+  at-least-once behaviour rather than a defect.
+- `scripts/clear_closed_routes.py` clears route keys that survived closure on
+  `occurrence/gpt`, the `issue-routes/route-survives-closure` findings that
+  remain once the artifacts above are discounted. Metadata-only: `selector_fn`
+  returns `False` for every entry so existing versioned physical keys are reused.
+  Writes are behind `--apply`; `--dry-run` prints and exits.
+
 ## [0.3.1] - 2026-09-10
 
 Retargets the deployment at the governed corpus in `s3://protology`, served by
@@ -417,6 +643,10 @@ every field the old checks read is forbidden rather than merely absent. See
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.5]: https://github.com/quiltdata/auto-checker/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/quiltdata/auto-checker/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/quiltdata/auto-checker/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/quiltdata/auto-checker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/quiltdata/auto-checker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0

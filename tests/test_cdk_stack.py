@@ -102,6 +102,35 @@ def policy_actions(template: Template) -> list[str]:
     return actions
 
 
+# -- the asset is what actually runs ---------------------------------------
+
+
+def test_packaged_modules_match_the_source_tree():
+    """The Lambda asset must be the source, not whatever setuptools last staged.
+
+    `build/lib` is setuptools' staging directory and `build_py` copies a file only
+    when the source is newer, so a stale staging dir silently ships old modules.
+    That put a pre-0.3.0 `checks`/`corpus`/`model` into production under an 0.3.1
+    version string, which made the deployed checker read a digest-algorithm
+    migration as 64 mutated turns.
+
+    `cdk diff` cannot catch this — it compares asset hashes, and a consistently
+    wrong asset hashes consistently — so the asset is compared against src here
+    and in scripts/build-lambda.sh.
+    """
+    src = pathlib.Path(__file__).resolve().parent.parent / "src" / "check_commit"
+    mismatched = [
+        f.name
+        for f in sorted(src.glob("*.py"))
+        if not (stack_mod.LAMBDA_ASSET / "check_commit" / f.name).is_file()
+        or (stack_mod.LAMBDA_ASSET / "check_commit" / f.name).read_bytes() != f.read_bytes()
+    ]
+    assert not mismatched, (
+        f"the Lambda asset diverges from src/check_commit: {mismatched}. "
+        "Remove build/ entirely and re-run scripts/build-lambda.sh."
+    )
+
+
 # -- the checked-in deployment target --------------------------------------
 
 

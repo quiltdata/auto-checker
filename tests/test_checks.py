@@ -102,6 +102,29 @@ def test_route_key_is_not_a_forbidden_field(ctx):
     assert checks.check_metadata_shape(None, cur, ctx) == []
 
 
+def test_metadata_validated_against_the_registered_schema(ctx):
+    """The condition `schema-drift/registered-schema-drift` was standing in for.
+    Comparing schema versions declared five of nine packages defective while
+    every one conformed; validating against the schema names the actual fault."""
+    cur = rev("b" * 64, BASE, meta={**META, "related_packages": "not-an-object"})
+    fs = checks.check_metadata_shape(None, cur, ctx)
+    assert kinds(fs) == [("metadata-shape", "nonconforming-metadata")]
+    assert "related_packages" in fs[0].detail
+
+
+def test_conformance_is_a_backstop_not_a_second_voice(ctx):
+    """A fault the §3 checks already name in the spec's own terms must not be
+    reported twice."""
+    cur = rev("b" * 64, BASE, meta={"related_packages": {}, "status": "open"})
+    fs = checks.check_metadata_shape(None, cur, ctx)
+    assert kinds(fs) == [("metadata-shape", "bad-status")]
+
+
+def test_conforming_metadata_passes(ctx):
+    cur = rev("b" * 64, BASE, meta={**META, FOLDER: "Outcome"})
+    assert checks.check_metadata_shape(None, cur, ctx) == []
+
+
 # --- issue-routes -----------------------------------------------------------
 
 def test_dangling_route_flagged(policy):
@@ -196,6 +219,70 @@ def test_status_grammar_is_case_sensitive(policy):
     ]
 
 
+def test_status_token_parsing():
+    """§5 as amended: the state is the leading token, an annotation may follow,
+    and emphasis around the token is ignored."""
+    t = checks._status_token
+    assert t("open") == "open"
+    assert t("closed") == "closed"
+    # the live forms that used to be faulted
+    assert t("open — q10 finite classicality unresolved") == "open"
+    assert t("closed and promoted") == "closed"
+    assert t("**closed — promoted as Theory 43**") == "closed"
+    assert t("**closed** — promoted as Theory 43") == "closed"
+    # §5: a `closed` inside the annotation is not a closure
+    assert t("open — q9 program closed through `021.29`; q10 unresolved") == "open"
+    # names no state
+    assert t("pending") is None
+    assert t("in-progress — nearly there") is None
+    assert t("") is None
+    assert t(None) is None
+    # the state read folds case, the grammar check does not
+    assert t("Closed") == "closed"
+    assert t("Closed", fold_case=False) is None
+
+
+def test_annotated_status_is_no_longer_faulted(policy):
+    """The finding that fired three times on occurrence/outcome 021 and
+    occurrence/gpt 009. §5 now admits the annotation."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta=META)
+    body = (
+        "# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n"
+        "- **Status:** open — q9 program closed through `021.29`; q10 unresolved\n"
+    ).encode()
+    assert checks.check_issue_readme(prev, cur, _readme_ctx(policy, body)) == []
+
+
+def test_annotated_closure_owes_provenance_and_clears_its_route(policy):
+    """The hole the amendment closes. occurrence/theory 068 is `closed and
+    promoted`, still routed, and was reported by nothing: comparing the whole
+    field to "closed" made an annotated closure read as neither state."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev(
+        "b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta={**META, FOLDER: "theory"}
+    )
+    body = b"# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n- **Status:** closed and promoted\n"
+    ctx = _readme_ctx(policy, body)
+    assert kinds(checks.check_issue_readme(prev, cur, ctx)) == [
+        ("issue-readme", "closure-provenance-missing")
+    ]
+    assert kinds(checks.check_issue_routes(prev, cur, ctx)) == [
+        ("issue-routes", "route-survives-closure")
+    ]
+
+
+def test_annotated_open_does_not_read_as_closed(policy):
+    """`open — q9 closed through 021.29` must not clear its own route."""
+    cur = rev("b" * 64, BASE, meta={**META, FOLDER: "outcome"})
+    body = (
+        "# 007 - x\n\n- **Opened:** o\n- **Originator:** o\n"
+        "- **Status:** open — q9 program closed through `021.29`\n"
+    ).encode()
+    ctx = FakeCtx(policy, contents={f"{FOLDER}/README.md": body})
+    assert checks.check_issue_routes(None, cur, ctx) == []
+
+
 def test_conforming_readme_passes(policy):
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/README.md": (201, "hr2")}, meta=META)
@@ -227,32 +314,54 @@ def test_existing_header_first_readme_is_not_retrofitted(policy):
 # --- turn-form --------------------------------------------------------------
 
 def test_numeric_turn_name_flagged(ctx):
+    """§5 states this one flatly — "noncanonical for new turns" — so it stays a
+    defect while the filename grammar around it does not."""
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/002.md": (10, "hn")}, meta=META)
     fs = checks.check_turn_form(prev, cur, ctx)
     assert kinds(fs) == [("turn-form", "numeric-turn-name")]
+    assert fs[0].severity == DEFECT
 
 
-def test_malformed_turn_name_flagged(ctx):
+def test_malformed_turn_name_is_known_unresolved(ctx):
+    """The filename form is §5's SHOULD — the only one in the document, which
+    otherwise uses MAY, MUST NOT and MUST once each. Severity follows that."""
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/notes.md": (10, "hn")}, meta=META)
-    assert kinds(checks.check_turn_form(prev, cur, ctx)) == [
-        ("turn-form", "malformed-turn-name")
-    ]
+    fs = checks.check_turn_form(prev, cur, ctx)
+    assert kinds(fs) == [("turn-form", "malformed-turn-name")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
+    assert "SHOULD" in fs[0].detail
 
 
-def test_turn_naming_the_wrong_issue_flagged(ctx):
+def test_letter_suffixed_turn_is_known_unresolved(ctx):
+    """The live convention for interleaved turns — 009.09b on occurrence/gpt,
+    005.07a, 009.08a. Outside the stated grammar, so recorded, not faulted."""
+    prev = rev("a" * 64, BASE, meta=META)
+    path = f"{FOLDER}/007.02b-GPT-advisory-note.md"
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    fs = checks.check_turn_form(prev, cur, ctx)
+    assert kinds(fs) == [("turn-form", "malformed-turn-name")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
+
+
+def test_turn_naming_the_wrong_issue_is_known_unresolved(ctx):
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/009.02-PM-review.md": (10, "hn")}, meta=META)
-    assert kinds(checks.check_turn_form(prev, cur, ctx)) == [
-        ("turn-form", "wrong-issue-prefix")
-    ]
+    fs = checks.check_turn_form(prev, cur, ctx)
+    assert kinds(fs) == [("turn-form", "wrong-issue-prefix")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
 
 
-def test_turn_collision_flagged(ctx):
+def test_turn_collision_is_known_unresolved(ctx):
+    """policies/occurrence.yaml already adjudicated six pre-migration
+    collisions as known-unresolved, citing issues/closed/030 and
+    auto-checker#6. The current regime is held to the same ruling."""
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/007.01-PM-also-first.md": (10, "hn")}, meta=META)
-    assert kinds(checks.check_turn_form(prev, cur, ctx)) == [("turn-form", "turn-collision")]
+    fs = checks.check_turn_form(prev, cur, ctx)
+    assert kinds(fs) == [("turn-form", "turn-collision")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
 
 
 def test_conforming_turn_passes(ctx):
@@ -271,11 +380,13 @@ def test_readme_is_the_one_unnumbered_entry(ctx):
 
 def test_malformed_issue_folder_flagged(ctx):
     """A folder that is not NNN-slug cannot carry a route key, so nothing else
-    would notice it."""
+    would notice it. §5 states the folder form flatly, and the consequence is
+    real, so this stays a defect."""
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, "issues/12-short/README.md": (10, "hn")}, meta=META)
     fs = checks.check_turn_form(prev, cur, ctx)
     assert kinds(fs) == [("turn-form", "malformed-issue-folder")]
+    assert fs[0].severity == DEFECT
 
 
 def test_legacy_closed_thread_is_not_a_malformed_folder(ctx):
@@ -306,6 +417,64 @@ def test_legacy_numeric_turn_is_also_immutable(ctx):
     entries = {**BASE, f"{FOLDER}/001.md": (10, "hn")}
     prev = rev("a" * 64, entries, meta=META)
     cur = rev("b" * 64, {**entries, f"{FOLDER}/001.md": (11, "hnx")}, meta=META)
+    assert kinds(checks.check_turn_immutability(prev, cur, ctx)) == [
+        ("turn-immutability", "turn-mutated")
+    ]
+
+
+TURN = f"{FOLDER}/007.01-Owner-opening.md"
+
+
+def _retype(view, path, hash_type, value, version="v1"):
+    """Rewrite one entry's digest as a different algorithm would record it."""
+    old = view.entries[path]
+    view.entries[path] = Entry(
+        size=old.size,
+        hash=value,
+        physical_key=f"s3://b/occurrence/testpkg/{path}?versionId={version}",
+        hash_type=hash_type,
+    )
+
+
+def test_hash_algorithm_change_is_not_a_mutation(ctx):
+    """A registry that migrates digest algorithms rewrites every entry's hash
+    without touching a byte. Comparing digests across algorithms made all of
+    them look mutated; the pinned object version settles it instead."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, BASE, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=")
+    _retype(cur, TURN, "CRC64NVME", "kA7qhA5VDXk=")
+    assert cur.content_changed(prev, TURN) is False
+    assert TURN not in cur.diff(prev)[2]
+    assert checks.check_turn_immutability(prev, cur, ctx) == []
+
+
+def test_incomparable_digest_on_new_object_version_is_unresolved(ctx):
+    """Different algorithm and a different object version: the manifests alone
+    cannot say whether the turn was mutated, so the check says so rather than
+    asserting a mutation it cannot see."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, BASE, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=", version="v1")
+    _retype(cur, TURN, "CRC64NVME", "kA7qhA5VDXk=", version="v2")
+    assert cur.content_changed(prev, TURN) is None
+    fs = checks.check_turn_immutability(prev, cur, ctx)
+    assert kinds(fs) == [("turn-immutability", "incomparable-turn-digest")]
+    assert fs[0].severity == KNOWN_UNRESOLVED
+
+
+def test_size_change_beats_an_incomparable_digest(ctx):
+    """Digests may be incomparable, but a differing size still proves a change."""
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, TURN: (80, "h1")}, meta=META)
+    _retype(prev, TURN, "sha2-256-chunked", "RkGm7usPZoM=")
+    cur.entries[TURN] = Entry(
+        size=80,
+        hash="kA7qhA5VDXk=",
+        physical_key=f"s3://b/occurrence/testpkg/{TURN}?versionId=v1",
+        hash_type="CRC64NVME",
+    )
+    assert cur.content_changed(prev, TURN) is True
     assert kinds(checks.check_turn_immutability(prev, cur, ctx)) == [
         ("turn-immutability", "turn-mutated")
     ]
@@ -487,17 +656,30 @@ def test_same_package_uri_is_not_cross_package(policy):
 
 # --- key-drift --------------------------------------------------------------
 
-def test_logical_physical_drift_flagged(ctx):
-    """Reproduces the class recorded in auto-checker#12: a relocation that
-    moved the logical key and left the object where it was."""
+def test_in_bucket_placement_is_a_note_not_a_defect(ctx):
+    """The class recorded in auto-checker#12 — a logical key moved while its
+    object stayed put. No longer a defect: the contract governs logical paths
+    only, and §8 has since removed relocation from the model entirely."""
     prev = rev("a" * 64, BASE, meta=META)
     cur = rev("b" * 64, {**BASE, f"{FOLDER}/001.md": (10, "hn")}, meta=META)
     cur.entries[f"{FOLDER}/001.md"] = Entry(
         size=10, hash="hn", physical_key="s3://b/occurrence/testpkg/issues/007aO-legacy.md"
     )
-    fs = checks.check_key_drift(prev, cur, ctx)
-    assert kinds(fs) == [("key-drift", "logical-physical-drift")]
-    assert "issues/007aO-legacy.md" in fs[0].detail
+    assert checks.check_key_drift(prev, cur, ctx) == []
+    assert any("issues/007aO-legacy.md" in n for n in ctx.notes)
+
+
+def test_reference_in_place_ingest_is_a_note(ctx):
+    """Referencing an upload in place, the shape seen on occurrence/outcome
+    021.37: entries backed under a sibling prefix in the registry bucket."""
+    path = f"{FOLDER}/007.02-Research-result.md"
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    cur.entries[path] = Entry(
+        size=10, hash="hn", physical_key="s3://b/occurrence/testpkg-uploads/007.02/result.md"
+    )
+    assert checks.check_key_drift(prev, cur, ctx) == []
+    assert any("testpkg-uploads" in n for n in ctx.notes)
 
 
 def test_foreign_backing_flagged(ctx):
@@ -515,6 +697,37 @@ def test_aligned_keys_pass(ctx):
     assert checks.check_key_drift(prev, cur, ctx) == []
 
 
+def test_percent_encoded_physical_key_is_aligned(ctx):
+    """A physical key is a URI, so a logical key holding a space or a non-ASCII
+    character arrives percent-encoded. Decoding it keeps such an entry off the
+    notes as well as out of the findings: the object is exactly where its
+    logical key says."""
+    path = "archive/04a-précis and notes(2).md"
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    cur.entries[path] = Entry(
+        size=10,
+        hash="hn",
+        physical_key=(
+            "s3://b/occurrence/testpkg/archive/04a-pr%C3%A9cis%20and%20notes%282%29.md"
+        ),
+    )
+    assert checks.check_key_drift(prev, cur, ctx) == []
+    assert ctx.notes == []
+
+
+def test_percent_encoding_decoded_before_comparing(ctx):
+    """Decoding reports the key S3 actually holds, not the URI form."""
+    path = "archive/04a précis.md"
+    prev = rev("a" * 64, BASE, meta=META)
+    cur = rev("b" * 64, {**BASE, path: (10, "hn")}, meta=META)
+    cur.entries[path] = Entry(
+        size=10, hash="hn", physical_key="s3://b/occurrence/testpkg/04a%20pr%C3%A9cis.md"
+    )
+    assert checks.check_key_drift(prev, cur, ctx) == []
+    assert any("04a précis.md" in n for n in ctx.notes)
+
+
 # --- schema-drift -----------------------------------------------------------
 
 VENDORED = (POLICY_DIR / "occurrence-workflow-schema.json").read_bytes()
@@ -527,34 +740,37 @@ def test_package_schema_matching_the_vendored_copy_passes(policy):
     assert checks.check_schema_drift(None, cur, ctx) == []
 
 
-def test_package_schema_drift_flagged(policy):
+def test_package_schema_drift_is_a_note(policy):
+    """§2 does not require a package to vendor the schema, so a divergent copy
+    is reported without a verdict."""
     stale = json.loads(VENDORED)
     stale["required"] = ["related_packages", "open_issues", "status"]
     cur = rev("b" * 64, {**BASE, SCHEMA_PATH: (10, "hs")}, meta=META)
     ctx = FakeCtx(policy, contents={SCHEMA_PATH: json.dumps(stale).encode()})
-    fs = checks.check_schema_drift(None, cur, ctx)
-    assert kinds(fs) == [("schema-drift", "package-schema-drift")]
+    assert checks.check_schema_drift(None, cur, ctx) == []
+    assert any(SCHEMA_PATH in n for n in ctx.notes)
 
 
-def test_registered_schema_drift_flagged_when_online(policy):
+def test_stamped_schema_version_is_a_note_not_a_defect(policy):
+    """A revision stamped an older schema version was validated against the
+    rules of its day. §2 names an unversioned path, so it cannot require any
+    particular version; five of nine occurrence/* packages were declared
+    defective this way while every one of them conformed."""
     uri = STAMP["schemas"]["occurrence"]
     stale = json.loads(VENDORED)
     del stale["additionalProperties"]
     cur = rev("b" * 64, BASE, meta=META)
     ctx = FakeCtx(policy, objects={uri: json.dumps(stale).encode()}, online=True)
-    assert kinds(checks.check_schema_drift(None, cur, ctx)) == [
-        ("schema-drift", "registered-schema-drift")
-    ]
+    assert checks.check_schema_drift(None, cur, ctx) == []
+    assert any("metadata-shape" in n for n in ctx.notes)
 
 
-def test_deleting_the_package_schema_flagged(policy):
-    """Drift by removal: nothing else covers this file's disappearance."""
+def test_deleting_the_package_schema_is_a_note(policy):
     prev = rev("a" * 64, {**BASE, SCHEMA_PATH: (len(VENDORED), "hs")}, meta=META)
     cur = rev("b" * 64, BASE, meta=META)
     ctx = FakeCtx(policy, contents={SCHEMA_PATH: VENDORED})
-    assert kinds(checks.check_schema_drift(prev, cur, ctx)) == [
-        ("schema-drift", "schema-removed")
-    ]
+    assert checks.check_schema_drift(prev, cur, ctx) == []
+    assert any("deleted" in n for n in ctx.notes)
 
 
 def test_registered_schema_unverified_offline(policy):

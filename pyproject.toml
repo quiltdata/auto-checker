@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "check-commit"
-version = "0.3.1"
+version = "0.3.5"
 description = "Deterministic tier-0 checker for governed Quilt packages"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,10 @@ dependencies = [
     "boto3>=1.42.1,<2",
     "PyYAML>=6.0",
     "Jinja2>=3.0",
+    # metadata-shape validates package metadata against the vendored workflow
+    # schema. quilt3 already pulls this in for its own workflow validation;
+    # named here because check_commit imports it directly.
+    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]

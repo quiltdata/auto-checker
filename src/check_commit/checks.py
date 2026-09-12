@@ -19,7 +19,7 @@ import json
 import posixpath
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from . import policy
 from .model import DEFECT, KNOWN_UNRESOLVED, Finding, RevisionView
@@ -146,14 +146,48 @@ def _first_content_line(text: str) -> str:
     return ""
 
 
+def _status_token(raw: str | None, *, fold_case: bool = True) -> str | None:
+    """The state token of a §5 `Status` field, or None if it names no state.
+
+    §5 as amended: "`Status` begins with a state token, exactly `open` or
+    `closed`. An optional annotation may follow the token." So the state is the
+    leading word and everything after it is prose. Markdown emphasis around the
+    token is ignored, since `**closed** — promoted` is a closure.
+
+    The rule that makes only the *leading* word admissible is §5's other
+    sentence: a reader "must not infer from a `closed` appearing later in the
+    annotation that the issue is closed", because `open — q9 closed through
+    021.29` is open.
+
+    `fold_case` separates two questions that want different answers. Reading an
+    issue's state is lenient: a badly-cased `Closed` still tells you the loop is
+    shut, and treating it as unknown would lose a closure. Checking the grammar
+    is strict, because §5 says `open | closed` exactly — so `bad-status` passes
+    `fold_case=False` and reports the casing while the state still reads.
+    """
+    if not raw:
+        return None
+    head = raw.strip().lstrip("*_ ").split()
+    if not head:
+        return None
+    token = head[0].strip("*_:;,.—-")
+    if fold_case:
+        token = token.lower()
+    return token if token in ("open", "closed") else None
+
+
 def _issue_status(ctx, view: RevisionView, readme_path: str) -> str | None:
-    """`open` / `closed` from an issue README, or None if unreadable."""
+    """The issue's state token, or None if unreadable or no state is named.
+
+    Callers cannot distinguish "unreadable" from "names no state" here, and
+    must not: both mean the loop state is undetermined, and §5 says an
+    automated reader must not guess it. `check_issue_readme/bad-status` is what
+    reports a Status that names no state.
+    """
     data = ctx.content(view, readme_path)
     if data is None:
         return None
-    fields = _provenance(data.decode("utf-8", errors="replace"))
-    status = fields.get("Status")
-    return status.lower() if status else None
+    return _status_token(_provenance(data.decode("utf-8", errors="replace")).get("Status"))
 
 
 def _route_target(key: str, view: RevisionView):
@@ -246,6 +280,49 @@ def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
                 f"additionalProperties: false",
             )
         )
+    # The checks above name the §3 conditions in the spec's own terms, which is
+    # worth more than a validator's message. Everything else the schema says —
+    # value types, the route-key pattern, the shape of related_packages — is
+    # checked by validating against it, as a backstop when nothing above fired
+    # so a single fault is not reported twice.
+    #
+    # This is what `schema-drift/registered-schema-drift` was standing in for.
+    # Comparing schema *versions* declared five packages defective while all
+    # nine conformed; asking whether the metadata conforms answers the question
+    # the proxy was approximating, and names the offending field when it fails.
+    if not findings:
+        findings.extend(_schema_violations(cur, ctx))
+    return findings
+
+
+def _schema_violations(cur, ctx) -> list[Finding]:
+    pol = ctx.policy
+    if not pol.vendored_schema:
+        return []
+    try:
+        import jsonschema
+    except ImportError:
+        ctx.note("metadata-shape: jsonschema unavailable, conformance unverified")
+        return []
+    try:
+        schema = json.loads(pol.vendored_schema_path.read_text())
+    except (OSError, ValueError) as exc:
+        ctx.note(f"metadata-shape: could not read the vendored schema ({exc})")
+        return []
+    validator = jsonschema.Draft202012Validator(schema)
+    findings = []
+    for err in sorted(validator.iter_errors(cur.meta or {}), key=lambda e: list(e.path)):
+        where = "/".join(str(p) for p in err.path) or "(root)"
+        findings.append(
+            Finding(
+                check="metadata-shape",
+                severity=DEFECT,
+                kind="nonconforming-metadata",
+                paths=(),
+                detail=f"package metadata does not satisfy the registered schema at "
+                f"{where}: {err.message}",
+            )
+        )
     return findings
 
 
@@ -331,22 +408,28 @@ def check_issue_readme(prev, cur, ctx) -> list[Finding]:
                         f"requires Opened, Originator, and Status",
                     )
                 )
-        # §5: "Status is exactly open | closed". Grammar is checked literally
-        # here; reading an issue's *state* elsewhere stays case-tolerant, since
-        # a badly-cased status still tells you the loop is shut.
+        # §5 as amended: the state is the leading token, exactly `open` or
+        # `closed`, and an annotation may follow it. What is faulted is a Status
+        # that names no state at all, because §5 then leaves the loop state
+        # undefined and forbids an automated reader from guessing it — and
+        # because §8's closure obligations are keyed to that token.
         raw_status = fields.get("Status")
-        if raw_status and raw_status not in ("open", "closed"):
+        if raw_status and _status_token(raw_status, fold_case=False) is None:
             findings.append(
                 Finding(
                     check="issue-readme",
                     severity=DEFECT,
                     kind="bad-status",
                     paths=(path,),
-                    detail=f"issue Status is {raw_status!r}; §5 requires exactly "
-                    f"open|closed",
+                    detail=f"issue Status is {raw_status!r}, whose leading token is not "
+                    f"exactly 'open' or 'closed'; §5 admits an annotation after the "
+                    f"token but the token itself is what carries the state, and §8's "
+                    f"closure obligations are keyed to it",
                 )
             )
-        if (raw_status or "").lower() == "closed":
+        # The state read stays lenient, so a Status whose *grammar* is faulted
+        # above is still held to its closure obligations here.
+        if _status_token(raw_status) == "closed":
             absent = [f for f in ("Closed", "Closed-By") if f not in fields]
             if absent:
                 findings.append(
@@ -406,20 +489,28 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
         base = posixpath.basename(path)
         if base == "README.md" or path != f"{folder}/{base}":
             continue  # the one unnumbered entry, or a nested non-turn artifact
+        # §5 states the turn filename form as this document's only SHOULD, in
+        # a document that otherwise reaches for MAY, MUST NOT and MUST exactly
+        # once each. Severity follows that distinction: the issue-folder form
+        # and the noncanonical-numeric rule are stated flatly and stay defects;
+        # departures from the filename grammar are recorded as known-unresolved.
         parts = policy.turn_parts(base)
         if parts is None:
             numeric = policy.NUMERIC_TURN_RE.match(base)
             findings.append(
                 Finding(
                     check="turn-form",
-                    severity=DEFECT,
+                    # "Pure numeric filenames such as `001.md` are noncanonical
+                    # for new turns" is flat; the filename form is a SHOULD.
+                    severity=DEFECT if numeric else KNOWN_UNRESOLVED,
                     kind="numeric-turn-name" if numeric else "malformed-turn-name",
                     paths=(path,),
                     detail=(
                         "pure numeric turn filename; §5 makes these noncanonical for "
                         "new turns, which take <issue>.<turn>-<contributor>-<slug>.md"
                         if numeric
-                        else "turn filename is not <issue>.<turn>-<contributor>-<slug>.md (§5)"
+                        else "turn filename is not <issue>.<turn>-<contributor>-<slug>.md; "
+                        "§5 states that form as a SHOULD, so this is recorded, not faulted"
                     ),
                 )
             )
@@ -430,11 +521,12 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
             findings.append(
                 Finding(
                     check="turn-form",
-                    severity=DEFECT,
+                    severity=KNOWN_UNRESOLVED,
                     kind="wrong-issue-prefix",
                     paths=(path,),
                     detail=f"turn names issue {issue} but sits in {folder}; §5 has the "
-                    f"issue component repeat the containing issue identifier",
+                    f"issue component repeat the containing issue identifier, within a "
+                    f"filename form it states as a SHOULD",
                 )
             )
         for other in sorted(cur.entries):
@@ -444,12 +536,19 @@ def check_turn_form(prev, cur, ctx) -> list[Finding]:
             if oparts and int(oparts[1]) == int(turn):
                 findings.append(
                     Finding(
+                        # The prefix already adjudicated this class as a
+                        # known-unresolved spec condition rather than a fault of
+                        # either writer, in issues/closed/030 and
+                        # auto-checker#6 — see `adjudicated_collisions` in
+                        # policies/occurrence.yaml. The current regime is held
+                        # to the same ruling.
                         check="turn-form",
-                        severity=DEFECT,
+                        severity=KNOWN_UNRESOLVED,
                         kind="turn-collision",
                         paths=(path, other),
                         detail=f"turn {turn} already taken in {folder}; §5 makes the "
-                        f"highest turn number the end of the issue sequence",
+                        f"highest turn number the end of the issue sequence, so the "
+                        f"sequence position is ambiguous",
                     )
                 )
     return findings
@@ -472,6 +571,23 @@ def check_turn_immutability(prev, cur, ctx) -> list[Finding]:
         if policy.turn_number(base) is None:
             continue
         old, new = prev.entries[path], cur.entries[path]
+        # `changed` counts undecidable content identity as changed so the
+        # content checks re-read the file. Here a change *is* the violation,
+        # so an undecidable comparison must not be reported as a mutation.
+        if cur.content_changed(prev, path) is None:
+            findings.append(
+                Finding(
+                    check="turn-immutability",
+                    severity=KNOWN_UNRESOLVED,
+                    kind="incomparable-turn-digest",
+                    paths=(path,),
+                    detail=f"{path} is recorded as {old.hash_type or 'an unnamed digest'} in "
+                    f"{prev.tophash[:12]} and {new.hash_type or 'an unnamed digest'} in "
+                    f"{cur.tophash[:12]}, on differing object versions; whether the filed "
+                    f"turn was mutated is unverified",
+                )
+            )
+            continue
         findings.append(
             Finding(
                 check="turn-immutability",
@@ -494,6 +610,12 @@ def _declared_delta(message: str) -> int | None:
 
 def check_entry_count(prev, cur, ctx) -> list[Finding]:
     if prev is None:
+        return []
+    if prev.tophash == cur.tophash:
+        # A re-publication of an identical manifest carries the message of the
+        # write it re-publishes, and that message's claim was about that write.
+        # Reading it as a claim about a diff of nothing would fault a correct
+        # message: the engine notes the re-publication instead.
         return []
     message = cur.message or ""
     actual = len(cur.entries) - len(prev.entries)
@@ -576,14 +698,37 @@ def check_pinned_citation(prev, cur, ctx) -> list[Finding]:
     return findings
 
 
-# -- logical keys are backed at their own physical path ---------------------
+# -- entries are backed inside the registry bucket --------------------------
+#
+# What this check may assert is bounded by what the contract says, and
+# spec:protocol/occurrence.md says nothing about physical placement: it speaks
+# only of logical paths. A Quilt package is a manifest of references, and
+# referencing an object in place — rather than copying it under the package
+# prefix — is ordinary, supported use. So an entry backed at some other key
+# inside the registry bucket is an observation, recorded as a note, not a
+# defect. It was flagged as one because the class was first met as a botched
+# closure relocation (auto-checker#12, and c29849f2/fc69cb94 in the current
+# corpus), and §8 has since removed relocation from the model entirely:
+# "There is no issues/closed/ relocation for current-model issues... Nothing
+# moves." With nothing relocating, a mismatch no longer evidences a failed
+# move.
+#
+# Backing *outside* the registry bucket stays a defect. That is data the
+# registry may be unable to read or keep, which is a consequence with teeth
+# rather than a naming preference.
 
 def _physical_path(physical_key: str):
-    """(bucket, key) of an s3 physical key, ignoring the version query."""
+    """(bucket, key) of an s3 physical key, ignoring the version query.
+
+    A physical key is a URI, so its path is percent-encoded: a logical key
+    containing a space or a non-ASCII character arrives here as `%20` or
+    `%C3%A9`. The comparison against the logical key is on S3 key names, not
+    on URIs, so the path is decoded back to the name S3 actually holds.
+    """
     u = urlparse(physical_key)
     if u.scheme != "s3":
         return None
-    return u.netloc, u.path
+    return u.netloc, unquote(u.path)
 
 
 def check_key_drift(prev, cur, ctx) -> list[Finding]:
@@ -610,15 +755,10 @@ def check_key_drift(prev, cur, ctx) -> list[Finding]:
             )
             continue
         if not key.endswith(f"/{ctx.package}/{path}"):
-            findings.append(
-                Finding(
-                    check="key-drift",
-                    severity=DEFECT,
-                    kind="logical-physical-drift",
-                    paths=(path,),
-                    detail=f"logical key was written but its object still lives at "
-                    f"{key.lstrip('/')!r}: the relocation is logical-only",
-                )
+            ctx.note(
+                f"key-drift: {path} is backed at {key.lstrip('/')!r} rather than at "
+                f"its own logical path. In-bucket, version-pinned, and permitted — "
+                f"the contract governs logical paths only"
             )
     return findings
 
@@ -635,6 +775,27 @@ def _load_json(data: bytes | None):
 
 
 def check_schema_drift(prev, cur, ctx) -> list[Finding]:
+    """Report on copies of the workflow schema, without asserting §2 requires them.
+
+    §2 is five lines. It names the workflow id, gives the registered schema's
+    *unversioned* canonical path, and places exactly one obligation on a
+    package writer: use `workflow="occurrence"`. It does not require a package
+    to vendor its own copy of the schema, and it cannot require a revision to
+    have been validated against any particular schema *version*, because the
+    path it names carries no version.
+
+    The line "§2 makes a stale schema a defect in its own right" is not in §2.
+    It originates in auto-checker#12's own framing and was quoted into this
+    file as though it were spec text. So the comparisons below are notes.
+
+    Two duties moved out of here rather than being dropped:
+      - the vendored copy tracking the registered object is a fact about *this
+        repo*, checked in CI (tests/test_registered_schema.py), where its
+        `paths: []` finding was really pointing all along;
+      - whether metadata actually satisfies the schema is checked by
+        `metadata-shape`, which validates against it instead of inferring
+        conformance from version equality.
+    """
     pol = ctx.policy
     if not pol.vendored_schema:
         return []
@@ -650,15 +811,9 @@ def check_schema_drift(prev, cur, ctx) -> list[Finding]:
         and pol.package_schema_path in prev.entries
         and pol.package_schema_path not in cur.entries
     ):
-        findings.append(
-            Finding(
-                check="schema-drift",
-                severity=DEFECT,
-                kind="schema-removed",
-                paths=(pol.package_schema_path,),
-                detail=f"the package's copy of the registered schema was deleted; §2 "
-                f"makes the package's own record of its contract part of the contract",
-            )
+        ctx.note(
+            f"schema-drift: {pol.package_schema_path} was deleted. §2 does not "
+            f"require a package to carry its own copy of the registered schema"
         )
     elif pol.package_schema_path and pol.package_schema_path in cur.entries:
         in_package = _load_json(ctx.content(cur, pol.package_schema_path))
@@ -673,35 +828,28 @@ def check_schema_drift(prev, cur, ctx) -> list[Finding]:
                 )
             )
         elif in_package != vendored:
-            findings.append(
-                Finding(
-                    check="schema-drift",
-                    severity=DEFECT,
-                    kind="package-schema-drift",
-                    paths=(pol.package_schema_path,),
-                    detail=f"the package's {pol.package_schema_path} differs from the "
-                    f"schema vendored at policies/{pol.vendored_schema}; §2 makes a "
-                    f"stale schema a defect in its own right",
-                )
+            ctx.note(
+                f"schema-drift: the package's {pol.package_schema_path} differs from "
+                f"policies/{pol.vendored_schema}. §2 requires neither the copy nor "
+                f"that it track any particular version"
             )
 
-    # The stamp names the exact registered schema object this revision was
-    # validated against, version included — a better source than any constant.
+    # The stamp names the schema *version* this revision was validated against.
+    # A revision stamped an older version was validated against the rules of
+    # its day, which is not a defect its author committed — §2 names an
+    # unversioned path, so "the registered schema" can only mean the current
+    # one. What matters is whether the metadata satisfies today's schema, and
+    # `metadata-shape` answers that directly.
     uri = ((cur.workflow or {}).get("schemas") or {}).get(pol.workflow)
     if uri and ctx.online:
         registered = _load_json(ctx.read_s3_uri(uri))
         if registered is None:
             ctx.note(f"schema-drift: could not fetch the registered schema at {uri}")
         elif registered != vendored:
-            findings.append(
-                Finding(
-                    check="schema-drift",
-                    severity=DEFECT,
-                    kind="registered-schema-drift",
-                    paths=(),
-                    detail=f"the registered schema at {uri} differs from the schema "
-                    f"vendored at policies/{pol.vendored_schema}",
-                )
+            ctx.note(
+                f"schema-drift: this revision was validated against {uri}, which is "
+                f"not the schema vendored at policies/{pol.vendored_schema}; see "
+                f"metadata-shape for whether the metadata satisfies the current one"
             )
     elif uri:
         ctx.note(f"schema-drift: offline, registered schema at {uri} unverified")
