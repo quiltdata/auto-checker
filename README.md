@@ -57,7 +57,7 @@ The governed corpus lives in `s3://protology`, served by the open catalog at <ht
 | `packagePrefix` | `occurrence` | `occurrence/*` — nine packages, including four (`born`, `fixed`, `history`, `transcripts`) that carry named-package pointers the catalog does not index. The EventBridge prefix filter matches revision events for all of them. |
 | `writeBack` | `false` | notify-only; see below |
 
-Write-back stays off for this deployment. `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True` with `default_workflow: occurrence`, so the registry validates every write, and whether the Packager stamps that workflow on a revision it cuts from a queue request is still unverified. Enable write-back only after subscribing to `SelfApplicationFailuresAlarm`, which is where an unstamped self-write surfaces.
+Write-back stays off for this deployment. `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True` with `default_workflow: occurrence`, so the registry validates every write, and whether the Packager stamps that workflow on a revision it cuts from a queue request is still unverified. Enable write-back only once the findings topic has a confirmed subscriber, which is where an unstamped self-write surfaces: the checker publishes self-application failures to `FindingsTopicArn` directly. The alarms carry no SNS action, so they are the CloudWatch view rather than a notification channel.
 
 Deploying against a second registry in the same account and region needs a distinct stack ID first; see the note in [Build and deploy](#3-build-and-deploy).
 
@@ -226,7 +226,7 @@ To check and alert without writing responses, deploy with:
 
 Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
 
-Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision and raises `SelfApplicationFailuresAlarm` rather than passing silently. Confirm that alarm is subscribed before enabling write-back.
+Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision rather than passing silently: the checker publishes a `SELF-APPLICATION FAILED` message to the findings topic and increments `SelfApplicationFailures`. Confirm the findings topic has a subscriber before enabling write-back. Subscribing to the alarm is not the thing to check — the alarms are created without SNS actions, so notification runs through the topic, and the alarm is the aggregated CloudWatch signal.
 
 ## 4. Subscribe to findings
 
@@ -269,6 +269,8 @@ Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 - `DefectsAlarm`
 - `EngineErrorsAlarm`
 - `SelfApplicationFailuresAlarm`
+
+These are created without SNS actions, so they change state without sending anything. Notification runs through the findings topic, which the checker publishes to directly for defects, engine errors, and self-application failures. Watch the alarms on a dashboard; subscribe to the topic to be told.
 
 ## Checks performed
 

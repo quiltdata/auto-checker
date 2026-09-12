@@ -168,6 +168,15 @@ corpus lives. See
   in both jobs. A tag is mutable, so repointing `v4` would run replacement code
   on every push with no change to the workflow file. Each pin carries the release
   it was as a comment.
+- README no longer tells operators to subscribe to `SelfApplicationFailuresAlarm`
+  before enabling write-back. The alarms are created with no SNS action —
+  confirmed against the deployed stack, where all three have empty
+  `AlarmActions` — so there is no alarm subscription to confirm. Notification runs
+  through the findings topic, which the handler publishes to directly for
+  defects, engine errors, and self-application failures. The prerequisite now
+  names the topic, and the alarms are described as the CloudWatch view rather
+  than a notification channel. Whether they should also carry an SNS action is a
+  separate question: it would duplicate every message the handler already sends.
 - `cdk/stack.py` resolves its Lambda asset from the module's own location instead
   of `../build/lambda` relative to the process's working directory, which only
   resolved when synth ran from `cdk/`. This is what makes the stack constructible
