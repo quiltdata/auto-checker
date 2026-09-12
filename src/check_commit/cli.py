@@ -25,6 +25,25 @@ def _history(args, package, bucket):
     return PackageHistory(package, bucket, cache_dir=args.cache and pathlib.Path(args.cache))
 
 
+def _select(pairs, want) -> int | None:
+    """Index of the revision `want` names, or None if it names none or is ambiguous.
+
+    Ambiguity is more than one distinct tophash. Two pointers may name one
+    manifest, since re-publishing identical content reuses the content hash, and
+    counting pointer entries rejected citations that were in fact unambiguous.
+
+    Of several pointers naming one manifest, the earliest is chosen: that is the
+    publication that introduced the content, so its commit message describes the
+    change and its parent is the previous distinct manifest. It is also the one
+    `lambda_handler.handle_detail` picks, which keeps `check-commit check
+    @<hash>` reproducing what the deployment reported.
+    """
+    matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
+    if len({pairs[i][1] for i in matches}) != 1:
+        return None
+    return min(matches, key=lambda i: int(pairs[i][0]))
+
+
 def cmd_check(args) -> int:
     m = URI_RE.match(args.uri)
     if not m:
@@ -40,11 +59,11 @@ def cmd_check(args) -> int:
 
     index = len(pairs) - 1
     if want and want != "latest":
-        matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
-        if len(matches) != 1:
+        found = _select(pairs, want)
+        if found is None:
             print(f"error: revision {want!r} not found (or ambiguous)", file=sys.stderr)
             return 2
-        index = matches[0]
+        index = found
 
     cur = history.view(pairs[index][1], pointer=pairs[index][0])
     prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
@@ -93,11 +112,11 @@ def cmd_compose(args) -> int:
     pairs = history.revisions()
     index = len(pairs) - 1
     if want and want != "latest":
-        matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
-        if len(matches) != 1:
+        found = _select(pairs, want)
+        if found is None:
             print(f"error: revision {want!r} not found (or ambiguous)", file=sys.stderr)
             return 2
-        index = matches[0]
+        index = found
 
     cur = history.view(pairs[index][1], pointer=pairs[index][0])
     prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
@@ -141,7 +160,9 @@ def cmd_backtest(args) -> int:
     if not upto:
         print(f"error: pin {pin[:12]} not found in revision list", file=sys.stderr)
         return 2
-    pairs = pairs[: upto[0] + 1]
+    # The last occurrence: a pin re-published under a second pointer is still
+    # the pin, and the corpus runs up to and including its final publication.
+    pairs = pairs[: upto[-1] + 1]
 
     try:
         pol = Policy.for_package(package, override=args.policy)

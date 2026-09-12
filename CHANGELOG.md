@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-12
+
+One manifest may sit under several pointers, and three places reasoned about
+revisions by counting list entries instead. Re-publishing identical content
+reuses the content hash and takes a fresh pointer, so a revision list can name
+the same top hash twice; `occurrence/theory` does it seven times.
+
+The first of these reported a defect against a correct write. `occurrence/theory`
+repaired the stale Issue 068 route at `1bcd7e01` — the repair 0.3.4's §5
+amendment had made visible — and the checker answered with
+`uri-resolution/unresolvable-pin` on a citation that gives the full 64-character
+hash of a revision that plainly exists.
+
+### Fixed
+
+- A citation to a re-published manifest resolves. `Context.resolve_same_package`
+  counted matching pointer entries, so two pointers naming one manifest looked
+  like an ambiguous prefix and the pin read as a revision that does not exist.
+  Ambiguity now means more than one *distinct* top hash, which is what the guard
+  was for: a short hash that could mean two different revisions still resolves
+  to neither.
+- `PackageHistory.find_revision` and the CLI's `@<hash>` selection had the same
+  fault. Where several pointers name one manifest they now choose the earliest —
+  the publication that introduced the content, whose message describes the change
+  and whose parent is the previous distinct manifest. That is also what
+  `lambda_handler.handle_detail` picks, so `check-commit check @<hash>`
+  reproduces what the deployment reported rather than quietly diverging from it.
+- The backtest pin resolves to its last occurrence, so a corpus runs up to and
+  including the pin's final publication.
+- `entry-count` makes no claim about a re-publication. A re-published manifest
+  carries the commit message of the write it re-publishes, and that message's
+  entry-count claim was about that write; reading it against a diff of nothing
+  faulted a correct message. The engine's re-publication note carries the
+  explanation instead.
+
 ## [0.3.4] - 2026-09-12
 
 Three changes to what a person receives, and one silent enforcement hole closed

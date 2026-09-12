@@ -173,5 +173,15 @@ class PackageHistory:
     # -- lookup helpers ------------------------------------------------------
 
     def find_revision(self, prefix: str, pairs: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
+        """The (pointer, tophash) a hash prefix names, or None if ambiguous.
+
+        Ambiguity is more than one distinct *tophash*: two pointers may name
+        one manifest, since re-publishing identical content reuses the content
+        hash. When they do, the earliest is returned — the publication that
+        introduced the content, whose message describes it and whose parent is
+        the previous distinct manifest.
+        """
         matches = [(p, t) for p, t in pairs if t.startswith(prefix)]
-        return matches[0] if len(matches) == 1 else None
+        if len({t for _, t in matches}) != 1:
+            return None
+        return min(matches, key=lambda pt: int(pt[0]))

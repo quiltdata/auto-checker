@@ -50,10 +50,20 @@ class Context:
             self.notes.append(text)
 
     def resolve_same_package(self, tophash_prefix: str) -> RevisionView | None:
-        matches = [t for t in self._tophashes if t.startswith(tophash_prefix)]
+        """The revision a `@tophash` citation names, or None if it names none.
+
+        The guard is against an *ambiguous prefix* — a short hash that could
+        mean two different revisions — so it counts distinct manifests. Two
+        pointers may name one top hash, because re-publishing identical content
+        reuses the content hash and takes a fresh pointer, and counting pointer
+        entries made a perfectly unambiguous citation unresolvable: a full
+        64-character hash still matched "twice" and was reported as a revision
+        that does not exist.
+        """
+        matches = {t for t in self._tophashes if t.startswith(tophash_prefix)}
         if len(matches) != 1:
             return None
-        return self.history.view(matches[0])
+        return self.history.view(matches.pop())
 
     def resolve_foreign(self, bucket: str, package: str, tophash, path):
         key = (bucket, package, tophash)

@@ -611,6 +611,12 @@ def _declared_delta(message: str) -> int | None:
 def check_entry_count(prev, cur, ctx) -> list[Finding]:
     if prev is None:
         return []
+    if prev.tophash == cur.tophash:
+        # A re-publication of an identical manifest carries the message of the
+        # write it re-publishes, and that message's claim was about that write.
+        # Reading it as a claim about a diff of nothing would fault a correct
+        # message: the engine notes the re-publication instead.
+        return []
     message = cur.message or ""
     actual = len(cur.entries) - len(prev.entries)
     declared = _declared_delta(message)
