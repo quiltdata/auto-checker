@@ -339,6 +339,26 @@ That sets `CHECK_COMMIT_REQUIRE_REGISTRY=1`, which turns an unreachable registry
 
 What *does* run in CI without credentials is `test_vendored_schema_is_valid_and_pinned`. It cannot see registry drift, but it holds the vendored copy to being a well-formed schema whose `required` and `patternProperties` still match `FIXED_META_FIELDS` and `ROUTE_KEY_RE`. That matters because `metadata-shape` reports those two rules in §3's own words and suppresses the validator's duplicate of them, which is only sound while the two say the same thing.
 
+## Releasing
+
+Bump `version` in `pyproject.toml` and `__version__` in
+`src/check_commit/__init__.py` together, **once per merge at most**, and not at
+all for a merge that ships no behaviour change.
+
+Releases are not tagged, so that rule is what keeps a version traceable. The
+version reaches two places — `engine_version` on every report, and the asset
+check in `scripts/build-lambda.sh` — and the way back from a report to the
+source that produced it is:
+
+```bash
+git log -S '__version__ = "0.3.6"' -- src/check_commit/__init__.py
+```
+
+Bumping more than once inside a pull request breaks that, because a squash merge
+collapses the intermediate bumps and they end up documented in the changelog
+with no commit of their own. 0.3.2 through 0.3.5 are exactly that, and the
+changelog records why.
+
 ## Updating a deployed policy
 
 After changing a prefix policy:
