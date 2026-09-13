@@ -21,9 +21,16 @@ author: commit-protocol
 contributor: Checker
 
 # The workflow every revision must be stamped with (§2), and the registered
-# schema it validates against. The vendored copy is compared byte-for-byte
-# against the package's own copy and, when online, against the registered
-# schema in the bucket: §2 makes a stale schema a defect in its own right.
+# schema `metadata-shape` validates metadata against.
+#
+# §2 places one obligation on a package writer — use `workflow="occurrence"` —
+# and names the registered schema at an unversioned path. It does not require a
+# package to vendor its own copy, nor a revision to have been validated against
+# a particular schema version. Comparisons against `vendored_schema` are
+# therefore reported as notes; the substantive question, whether the metadata
+# satisfies the schema, is a `metadata-shape` defect. That the vendored copy
+# tracks the registered object is asserted in tests/test_registered_schema.py,
+# since it is a fact about this repo rather than about any package.
 workflow: occurrence
 package_schema_path: protocol/occurrence-workflow-schema.json
 vendored_schema: occurrence-workflow-schema.json

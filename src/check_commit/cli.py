@@ -25,6 +25,25 @@ def _history(args, package, bucket):
     return PackageHistory(package, bucket, cache_dir=args.cache and pathlib.Path(args.cache))
 
 
+def _select(pairs, want) -> int | None:
+    """Index of the revision `want` names, or None if it names none or is ambiguous.
+
+    Ambiguity is more than one distinct tophash. Two pointers may name one
+    manifest, since re-publishing identical content reuses the content hash, and
+    counting pointer entries rejected citations that were in fact unambiguous.
+
+    Of several pointers naming one manifest, the earliest is chosen: that is the
+    publication that introduced the content, so its commit message describes the
+    change and its parent is the previous distinct manifest. It is also the one
+    `lambda_handler.handle_detail` picks, which keeps `check-commit check
+    @<hash>` reproducing what the deployment reported.
+    """
+    matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
+    if len({pairs[i][1] for i in matches}) != 1:
+        return None
+    return min(matches, key=lambda i: int(pairs[i][0]))
+
+
 def cmd_check(args) -> int:
     m = URI_RE.match(args.uri)
     if not m:
@@ -40,11 +59,11 @@ def cmd_check(args) -> int:
 
     index = len(pairs) - 1
     if want and want != "latest":
-        matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
-        if len(matches) != 1:
+        found = _select(pairs, want)
+        if found is None:
             print(f"error: revision {want!r} not found (or ambiguous)", file=sys.stderr)
             return 2
-        index = matches[0]
+        index = found
 
     cur = history.view(pairs[index][1], pointer=pairs[index][0])
     prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
@@ -93,11 +112,11 @@ def cmd_compose(args) -> int:
     pairs = history.revisions()
     index = len(pairs) - 1
     if want and want != "latest":
-        matches = [i for i, (_, t) in enumerate(pairs) if t.startswith(want)]
-        if len(matches) != 1:
+        found = _select(pairs, want)
+        if found is None:
             print(f"error: revision {want!r} not found (or ambiguous)", file=sys.stderr)
             return 2
-        index = matches[0]
+        index = found
 
     cur = history.view(pairs[index][1], pointer=pairs[index][0])
     prev = history.view(pairs[index - 1][1], pointer=pairs[index - 1][0]) if index else None
@@ -141,7 +160,9 @@ def cmd_backtest(args) -> int:
     if not upto:
         print(f"error: pin {pin[:12]} not found in revision list", file=sys.stderr)
         return 2
-    pairs = pairs[: upto[0] + 1]
+    # The last occurrence: a pin re-published under a second pointer is still
+    # the pin, and the corpus runs up to and including its final publication.
+    pairs = pairs[: upto[-1] + 1]
 
     try:
         pol = Policy.for_package(package, override=args.policy)
@@ -151,8 +172,10 @@ def cmd_backtest(args) -> int:
     # A corpus declares the regime it belongs to: the pre-migration corpus is
     # audited against the contract it was written under, not today's.
     regime = args.regime or exp.get("regime") or pol.regime
+    # "pointers", not "revisions": several may name one manifest, and conflating
+    # the two is what this loop had to stop doing.
     print(
-        f"backtest: {package}, {len(pairs)} revisions up to pin {pin[:12]}, "
+        f"backtest: {package}, {len(pairs)} pointers up to pin {pin[:12]}, "
         f"regime {regime}"
     )
     ctx = Context(history, pairs, online=args.online, policy=pol, regime=regime)
@@ -160,7 +183,18 @@ def cmd_backtest(args) -> int:
     counts = collections.Counter()
     prev = None
     errors = []
+    republished = 0
     for ptr, tophash in pairs:
+        if prev is not None and prev.tophash == tophash:
+            # A re-publication of the manifest just checked. Checking it again
+            # would diff it against itself and store the empty result over the
+            # introducing publication's findings, since `by_hash` is keyed by
+            # top hash — so a `must_flag` expectation for that hash would fail
+            # for a reason the corpus never intended. The introducing
+            # publication is the one the expectations are written about, and it
+            # is also the one `_select` and `find_revision` resolve to.
+            republished += 1
+            continue
         cur = history.view(tophash, pointer=ptr)
         report = run(prev, cur, ctx)
         if report.error:
@@ -169,6 +203,11 @@ def cmd_backtest(args) -> int:
         for f in report.findings:
             counts[(f.check, f.severity)] += 1
         prev = cur
+    if republished:
+        print(
+            f"  ({republished} pointer(s) re-published a manifest already checked "
+            f"and were skipped)"
+        )
 
     def findings_for(prefix):
         return [f for t, fs in by_hash.items() if t.startswith(prefix) for f in fs]
@@ -230,7 +269,9 @@ def cmd_backtest(args) -> int:
     for (check, sev), n in sorted(counts.items()):
         print(f"  {check:<20} {sev:<17} {n}")
     flagged = sum(1 for fs in by_hash.values() if any(f.severity == DEFECT for f in fs))
-    print(f"revisions with defects: {flagged}/{len(pairs)}")
+    # Denominator is manifests checked, not pointers listed: a re-published
+    # pointer was skipped above and is not a revision anything was decided on.
+    print(f"revisions with defects: {flagged}/{len(by_hash)}")
 
     if args.report:
         out = {

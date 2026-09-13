@@ -23,6 +23,7 @@ import os
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
+from . import notify
 from .compose import ComposeError, compose
 from .corpus import PackageHistory
 from .engine import Context, run
@@ -131,12 +132,13 @@ class Handler:
         if not report.findings:
             return self._log(Outcome("checked", f"{handle}@{cur.tophash[:12]} PASS", report))
 
+        # The report as data goes to the log, where a machine consumer belongs;
+        # the topic gets prose, because its subscriber is a person reading email.
+        print(report.to_json())
+
         catalog_hint = f"{handle}@{cur.tophash}"
         if defects:
-            self._notify(
-                f"[check-commit] {len(defects)} defect(s) in {handle}@{cur.tophash[:12]}",
-                report.to_json(),
-            )
+            self._notify(notify.subject(report), notify.render(report, self.policy))
         if not self.write_back:
             return self._log(
                 Outcome("checked", f"{catalog_hint}: {len(report.findings)} finding(s), notify-only", report)
@@ -207,9 +209,12 @@ class Handler:
         ctx = Context(history, pairs, online=False, policy=self.policy)
         report = run(prev, cur, ctx)
         if report.verdict not in ("pass", "known-unresolved"):
+            print(report.to_json())
             self._notify(
                 f"[check-commit] SELF-APPLICATION FAILED on {handle}@{cur.tophash[:12]}",
-                f"diff added={added} removed={removed} changed={changed}\n{report.to_json()}",
+                f"The checker's own revision does not pass its own checks.\n\n"
+                f"Diff: added={added} removed={removed} changed={changed}\n\n"
+                f"{notify.render(report, self.policy)}",
             )
             self._metric("SelfApplicationFailures", 1)
             return self._log(Outcome("error", "self-application failed", report))
@@ -229,7 +234,7 @@ class Handler:
 
     @staticmethod
     def _log(outcome: Outcome) -> Outcome:
-        print(json.dumps({"action": outcome.action, "detail": outcome.detail}))
+        print(json.dumps({"action": outcome.action, "detail": outcome.detail}, ensure_ascii=False))
         return outcome
 
 

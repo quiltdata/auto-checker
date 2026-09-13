@@ -280,6 +280,12 @@ Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 
 These are created without SNS actions, so they change state without sending anything. Notification runs through the findings topic, which the checker publishes to directly for defects, engine errors, and self-application failures. Watch the alarms on a dashboard; subscribe to the topic to be told.
 
+### What a notification looks like
+
+SNS email delivery is plain text, so the topic carries prose rather than the report's JSON: a subject line that says what happened, then defects, known-unresolved findings and notes in separate sections, then a catalog link to the revision. The wording lives in `policies/<prefix>-notify.md` — the same template seam `compose` uses for issue turns, so what a notification says is policy rather than code.
+
+The JSON report is still produced and still authoritative; `lambda_handler` prints it to CloudWatch Logs, where a machine consumer belongs. `check-commit check --json` prints the same thing locally.
+
 ## Checks performed
 
 Under the `current` regime:
@@ -287,15 +293,15 @@ Under the `current` regime:
 | Check | What it detects |
 | --- | --- |
 | `workflow-stamp` | Revisions written without the registered workflow, whose metadata was therefore never validated. |
-| `metadata-shape` | Missing `related_packages` or `status`, an invalid status, or any field the registered schema's `additionalProperties: false` forbids. |
+| `metadata-shape` | Missing `related_packages` or `status`, an invalid status, any field the registered schema's `additionalProperties: false` forbids, and — as a backstop — metadata that does not validate against the vendored schema. |
 | `issue-routes` | Route keys naming no issue in the manifest, and routes that survive closure. |
-| `issue-readme` | Issue READMEs missing `Opened`, `Originator`, or `Status`, closed without `Closed` and `Closed-By`, or created without leading with their H1. |
-| `turn-form` | Turn filenames that are not `<issue>.<turn>-<contributor>-<slug>.md`, name the wrong issue, or take a turn number already used. |
+| `issue-readme` | Issue READMEs missing `Opened`, `Originator`, or `Status`, a `Status` whose leading token is not exactly `open` or `closed`, closure without `Closed` and `Closed-By`, or a new README not leading with its H1. |
+| `turn-form` | Issue folders outside the `NNN-slug` form, and pure numeric turn filenames. Departures from the `<issue>.<turn>-<contributor>-<slug>.md` grammar — wrong issue component, reused turn number, any other shape — are known-unresolved, because §5 states that grammar as a SHOULD. |
 | `turn-immutability` | A filed turn whose bytes changed. Corrections are new turns. |
 | `entry-count` | A commit message whose declared entry-count delta disagrees with the manifest, including a relocation that is not net zero. |
 | `pinned-citation` | Cross-package evidence cited unpinned or at `@latest`. |
-| `key-drift` | Logical keys backed at some other physical path, or outside the registry bucket. |
-| `schema-drift` | The package's or the registry's copy of the workflow schema diverging from the vendored one. |
+| `key-drift` | Entries backed outside the registry bucket. Placement *within* the bucket is a note, not a defect. |
+| `schema-drift` | Notes only: a package's copy of the workflow schema diverging from the vendored one, or a revision stamped with a schema version other than the current one. Whether the vendored copy still matches the registered one is a gate on this repo, not on a package — see [Pre-deploy gates](#pre-deploy-gates). |
 | `watchlist-size` | Undeclared size decreases in policy-defined artifacts. |
 | `uri-resolution` | Malformed or unresolved `quilt+s3://` references in changed documents. |
 
@@ -303,9 +309,35 @@ Under the `pre-migration` regime, `watchlist-size` and `uri-resolution` still ap
 
 Findings are classified as `defect` or `known-unresolved`. Policy-defined adjudications remain visible as known-unresolved rather than being silently ignored.
 
+### What severity means
+
+A `defect` claims the contract was broken. So a check may only raise one where
+`spec:protocol/occurrence.md` says something is required, and the spec is
+deliberate about that: across 222 lines it uses `MAY` once (§3, route keys),
+`MUST NOT` once (§3, routes and ephemeral executions), `MUST` once (§6,
+reconciling parallel deliveries), and `SHOULD` once (§5, turn filenames).
+
+Where the contract states a preference rather than a requirement, or where the
+condition is real but no rule addresses it, the finding is `known-unresolved`
+or a note. Three checks previously ignored that line and were recalibrated in
+0.3.3 — see the changelog. The rule going forward: a check that cannot cite a
+section for its severity does not get to set the verdict.
+
 ### What the checker does not check
 
 The registered schema already enforces the shape of package metadata on every validated write, and `is_workflow_required` makes that validation mandatory. The checks above are the part of the contract JSON Schema cannot express: cross-revision arithmetic, artifact grammar, and the join between metadata, entry set, and file bytes.
+
+## Pre-deploy gates
+
+Two checks need read credentials for the registry bucket, which repository CI does not have, so they run before a deploy rather than in the `unit` workflow: the backtests, which replay real revisions, and the comparison of the vendored workflow schema against the registered object at `.quilt/workflows/occurrence.json`.
+
+```bash
+bash scripts/preflight.sh
+```
+
+That sets `CHECK_COMMIT_REQUIRE_REGISTRY=1`, which turns an unreachable registry from a skip into a failure — without it, both checks pass silently wherever credentials are absent, which is how the schema comparison came to be described as gating a build it never ran in.
+
+What *does* run in CI without credentials is `test_vendored_schema_is_valid_and_pinned`. It cannot see registry drift, but it holds the vendored copy to being a well-formed schema whose `required` and `patternProperties` still match `FIXED_META_FIELDS` and `ROUTE_KEY_RE`. That matters because `metadata-shape` reports those two rules in §3's own words and suppresses the validator's duplicate of them, which is only sound while the two say the same thing.
 
 ## Updating a deployed policy
 
