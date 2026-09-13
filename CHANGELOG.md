@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## How versions work here
+
+Releases are not tagged, and the version headings below are deliberately not
+links. Nothing in this repository resolves a tag: there is no publish step, and
+`cdk deploy` ships from a working tree. A version has two jobs — stamping
+`engine_version` on every report, and letting `scripts/build-lambda.sh` verify
+the deployed asset against its source — and both read the source tree. The
+footer of compare links this file used to carry pointed at tags that had never
+existed, for every release back to 0.1.0.
+
+What replaces a tag is the version being recoverable from history:
+
+```bash
+git log -S '__version__ = "0.3.6"' -- src/check_commit/__init__.py
+```
+
+That works only while a version corresponds to a commit, so **one merge bumps
+the version at most once**, and a merge that ships no behaviour change does not
+bump it at all.
+
+0.3.2 through 0.3.5 are the exception, and are left here as a caution rather
+than repaired. They were four bumps inside one squash-merged pull request
+([#22](https://github.com/quiltdata/auto-checker/pull/22)), so `main` goes from
+0.3.1 to 0.3.6 in a single commit and those four versions have no commit of
+their own. A report stamped with one of them can be read against this file and
+against that pull request, but not located in `main`'s history.
+
 ## [0.3.6] - 2026-09-12
 
 Review of #22 found four soundness problems, three of them in code added by
@@ -691,13 +718,3 @@ every field the old checks read is forbidden rather than merely absent. See
   Quilt Packager queue.
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
-
-[0.3.6]: https://github.com/quiltdata/auto-checker/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/quiltdata/auto-checker/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/quiltdata/auto-checker/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/quiltdata/auto-checker/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/quiltdata/auto-checker/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/quiltdata/auto-checker/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/quiltdata/auto-checker/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/quiltdata/auto-checker/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/quiltdata/auto-checker/releases/tag/v0.1.0
