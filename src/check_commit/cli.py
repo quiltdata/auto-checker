@@ -172,8 +172,10 @@ def cmd_backtest(args) -> int:
     # A corpus declares the regime it belongs to: the pre-migration corpus is
     # audited against the contract it was written under, not today's.
     regime = args.regime or exp.get("regime") or pol.regime
+    # "pointers", not "revisions": several may name one manifest, and conflating
+    # the two is what this loop had to stop doing.
     print(
-        f"backtest: {package}, {len(pairs)} revisions up to pin {pin[:12]}, "
+        f"backtest: {package}, {len(pairs)} pointers up to pin {pin[:12]}, "
         f"regime {regime}"
     )
     ctx = Context(history, pairs, online=args.online, policy=pol, regime=regime)
