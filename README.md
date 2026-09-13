@@ -301,7 +301,7 @@ Under the `current` regime:
 | `entry-count` | A commit message whose declared entry-count delta disagrees with the manifest, including a relocation that is not net zero. |
 | `pinned-citation` | Cross-package evidence cited unpinned or at `@latest`. |
 | `key-drift` | Entries backed outside the registry bucket. Placement *within* the bucket is a note, not a defect. |
-| `schema-drift` | Notes only: a package's copy of the workflow schema diverging from the vendored one, or a revision stamped with a schema version other than the current one. |
+| `schema-drift` | Notes only: a package's copy of the workflow schema diverging from the vendored one, or a revision stamped with a schema version other than the current one. Whether the vendored copy still matches the registered one is a gate on this repo, not on a package — see [Pre-deploy gates](#pre-deploy-gates). |
 | `watchlist-size` | Undeclared size decreases in policy-defined artifacts. |
 | `uri-resolution` | Malformed or unresolved `quilt+s3://` references in changed documents. |
 
@@ -326,6 +326,18 @@ section for its severity does not get to set the verdict.
 ### What the checker does not check
 
 The registered schema already enforces the shape of package metadata on every validated write, and `is_workflow_required` makes that validation mandatory. The checks above are the part of the contract JSON Schema cannot express: cross-revision arithmetic, artifact grammar, and the join between metadata, entry set, and file bytes.
+
+## Pre-deploy gates
+
+Two checks need read credentials for the registry bucket, which repository CI does not have, so they run before a deploy rather than in the `unit` workflow: the backtests, which replay real revisions, and the comparison of the vendored workflow schema against the registered object at `.quilt/workflows/occurrence.json`.
+
+```bash
+bash scripts/preflight.sh
+```
+
+That sets `CHECK_COMMIT_REQUIRE_REGISTRY=1`, which turns an unreachable registry from a skip into a failure — without it, both checks pass silently wherever credentials are absent, which is how the schema comparison came to be described as gating a build it never ran in.
+
+What *does* run in CI without credentials is `test_vendored_schema_is_valid_and_pinned`. It cannot see registry drift, but it holds the vendored copy to being a well-formed schema whose `required` and `patternProperties` still match `FIXED_META_FIELDS` and `ROUTE_KEY_RE`. That matters because `metadata-shape` reports those two rules in §3's own words and suppresses the validator's duplicate of them, which is only sound while the two say the same thing.
 
 ## Updating a deployed policy
 

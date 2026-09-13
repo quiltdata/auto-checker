@@ -19,6 +19,8 @@ revisions by counting list entries got that wrong, in three different ways:
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from check_commit import checks, notify
@@ -163,3 +165,142 @@ def test_a_real_parent_still_has_its_claim_verified():
     prev = RevisionView(**{**cur.__dict__, "tophash": "aa" * 32, "pointer": "1789234378"})
     fs = checks.check_entry_count(prev, cur, None)
     assert [(f.check, f.kind) for f in fs] == [("entry-count", "entry-count-mismatch")]
+
+
+# --- an object version is proof only as a whole identity ---------------------
+
+def _entry(size, hash_, hash_type, pk):
+    return Entry(size=size, hash=hash_, physical_key=pk, hash_type=hash_type)
+
+
+PK = "s3://protology/occurrence/theory/00-x.md?versionId=abc123"
+
+
+def test_one_object_version_proves_identical_content():
+    """The case the tri-state exists for: algorithms differ, same object
+    version, so the bytes are the same bytes."""
+    a = _entry(10, "sha", "sha2-256-chunked", PK)
+    b = _entry(10, "crc", "CRC64NVME", PK)
+    assert a.same_content_as(b) is True
+
+
+def test_a_matching_version_on_a_different_object_proves_nothing():
+    """A versionId is only meaningful against the object it belongs to, and an
+    entry may be backed at a different key from one revision to the next."""
+    a = _entry(10, "sha", "sha2-256-chunked", PK)
+    b = _entry(10, "crc", "CRC64NVME", PK.replace("00-x.md", "01-y.md"))
+    assert a.same_content_as(b) is None
+    other_bucket = _entry(10, "crc", "CRC64NVME", PK.replace("protology", "elsewhere"))
+    assert a.same_content_as(other_bucket) is None
+
+
+def test_a_null_version_is_not_a_pin():
+    """S3 reports versionId=null for an object written while versioning was
+    suspended, and every such object carries it, so it proves nothing."""
+    null_pk = "s3://protology/occurrence/theory/00-x.md?versionId=null"
+    a = _entry(10, "sha", "sha2-256-chunked", null_pk)
+    b = _entry(10, "crc", "CRC64NVME", null_pk)
+    assert a.object_version is None
+    assert a.same_content_as(b) is None
+
+
+def test_an_unversioned_key_is_not_a_pin():
+    a = _entry(10, "sha", "sha2-256-chunked", "s3://protology/occurrence/theory/00-x.md")
+    b = _entry(10, "crc", "CRC64NVME", "s3://protology/occurrence/theory/00-x.md")
+    assert a.object_version is None
+    assert a.same_content_as(b) is None
+
+
+def test_object_version_decodes_a_percent_encoded_key():
+    """So the same object is recognised as the same whichever form its key
+    arrives in."""
+    a = _entry(10, "sha", "sha2-256-chunked", "s3://b/p/04a-pr%C3%A9cis.md?versionId=v1")
+    assert a.object_version == ("b", "/p/04a-précis.md", "v1")
+
+
+# --- the backtest keeps the introducing publication's findings ---------------
+
+def test_backtest_does_not_overwrite_findings_with_a_republication(tmp_path, monkeypatch, capsys):
+    """`by_hash` is keyed by top hash, so checking a re-published pointer would
+    diff a manifest against itself and store the empty result over the findings
+    the corpus is written about — failing a `must_flag` expectation for a reason
+    the corpus never intended."""
+    import yaml
+
+    from check_commit import cli
+
+    INTRODUCED = "aa" * 32
+    REPUBLISHED = "bb" * 32  # published twice, below
+
+    class StubHistory:
+        registry = "s3://protology"
+        bucket = "protology"
+        package = "occurrence/spec"
+
+        def __init__(self, *a, **k):
+            pass
+
+        def revisions(self):
+            return [
+                ("1", INTRODUCED),
+                ("2", REPUBLISHED),
+                ("3", REPUBLISHED),  # same manifest, fresh pointer
+            ]
+
+        def view(self, tophash, pointer=None):
+            # One entry more at REPUBLISHED, so its introducing publication has a
+            # real diff and a defect to report.
+            entries = {"a.md": Entry(size=1, hash="h", physical_key=None)}
+            if tophash == REPUBLISHED:
+                entries["issues/12-short/README.md"] = Entry(
+                    size=1, hash="h2", physical_key=None
+                )
+            return RevisionView(
+                tophash=tophash,
+                pointer=pointer,
+                message="",
+                meta={"related_packages": {}, "status": "active"},
+                entries=entries,
+                workflow={"id": "occurrence", "schemas": {}},
+            )
+
+        def content(self, view, path):
+            return None
+
+        def read_s3_uri(self, uri):
+            return None
+
+    monkeypatch.setattr(cli, "PackageHistory", StubHistory)
+
+    exp = tmp_path / "exp.yaml"
+    exp.write_text(
+        yaml.safe_dump(
+            {
+                "regime": "current",
+                "package": "occurrence/spec",
+                "registry": "s3://protology",
+                "pin": REPUBLISHED,
+                "must_flag": {
+                    REPUBLISHED[:8]: {
+                        "hash": REPUBLISHED[:8],
+                        "checks": ["turn-form"],
+                        "class": "malformed-issue-folder",
+                    }
+                },
+            }
+        )
+    )
+
+    args = argparse.Namespace(
+        expectations=str(exp),
+        online=False,
+        report=None,
+        cache=str(tmp_path / "cache"),
+        policy=None,
+        regime=None,
+    )
+    rc = cli.cmd_backtest(args)
+    out = capsys.readouterr().out
+    assert "re-published a manifest already checked" in out
+    assert "BACKTEST PASSED" in out
+    assert rc == 0

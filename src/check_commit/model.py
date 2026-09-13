@@ -23,32 +23,48 @@ class Entry:
     hash_type: str | None = None
 
     @property
-    def version_id(self) -> str | None:
-        """The S3 version the physical key pins, if it pins one."""
+    def object_version(self) -> tuple[str, str, str] | None:
+        """The immutable S3 object version this entry pins, or None.
+
+        `(bucket, key, versionId)` — the whole identity, because a versionId is
+        only meaningful against the object it belongs to. An entry may be backed
+        at a different bucket and key from one revision to the next, so
+        comparing versionIds alone would be comparing labels from two different
+        objects.
+
+        `versionId=null` is not a pin. S3 reports it for an object written while
+        bucket versioning was suspended or disabled, and every such object in
+        the bucket carries the same value, so it proves nothing about content.
+        """
         if not self.physical_key:
             return None
-        from urllib.parse import parse_qs, urlparse
+        from urllib.parse import parse_qs, unquote, urlparse
 
-        vid = parse_qs(urlparse(self.physical_key).query).get("versionId")
-        return vid[0] if vid else None
+        u = urlparse(self.physical_key)
+        if u.scheme != "s3" or not u.netloc:
+            return None
+        vid = parse_qs(u.query).get("versionId")
+        if not vid or vid[0] in ("", "null"):
+            return None
+        return u.netloc, unquote(u.path), vid[0]
 
     def same_content_as(self, other: "Entry") -> bool | None:
         """True / False if content identity is decidable, None if it is not.
 
         Comparable digests settle it. When two revisions were written under
         different hash algorithms the digests carry no information about each
-        other, and a versioned physical key settles it instead: an S3 object
-        version is immutable, so the same version is the same bytes. With
-        neither a common algorithm nor a shared object version, content
-        identity cannot be decided from the manifests alone — a differing
-        size still proves a difference, but equal sizes prove nothing.
+        other, and one immutable S3 object version settles it instead: the same
+        version of the same object is the same bytes. With neither a common
+        algorithm nor a shared object version, content identity cannot be
+        decided from the manifests alone — a differing size still proves a
+        difference, but equal sizes prove nothing.
         """
         if self.hash and other.hash and self.hash_type == other.hash_type:
             return self.hash == other.hash and self.size == other.size
         if self.size != other.size:
             return False
-        vid = self.version_id
-        if vid is not None and vid == other.version_id:
+        mine = self.object_version
+        if mine is not None and mine == other.object_version:
             return True
         return None
 

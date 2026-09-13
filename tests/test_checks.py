@@ -112,12 +112,34 @@ def test_metadata_validated_against_the_registered_schema(ctx):
     assert "related_packages" in fs[0].detail
 
 
-def test_conformance_is_a_backstop_not_a_second_voice(ctx):
-    """A fault the §3 checks already name in the spec's own terms must not be
-    reported twice."""
+def test_a_fault_named_in_spec_terms_is_not_reported_twice(ctx):
     cur = rev("b" * 64, BASE, meta={"related_packages": {}, "status": "open"})
     fs = checks.check_metadata_shape(None, cur, ctx)
     assert kinds(fs) == [("metadata-shape", "bad-status")]
+
+
+def test_an_independent_violation_is_not_hidden_behind_another(ctx):
+    """Validation must not be gated on the §3 checks finding nothing. A bad
+    `status` and a non-object `related_packages` are unrelated faults; reporting
+    only the first would leave the type error to surface later as if it were
+    new."""
+    cur = rev("b" * 64, BASE, meta={"related_packages": "not-an-object", "status": "open"})
+    fs = checks.check_metadata_shape(None, cur, ctx)
+    assert kinds(fs) == [
+        ("metadata-shape", "bad-status"),
+        ("metadata-shape", "nonconforming-metadata"),
+    ]
+    assert "related_packages" in [f for f in fs if f.kind == "nonconforming-metadata"][0].detail
+
+
+def test_forbidden_fields_are_not_restated_by_the_validator(ctx):
+    """`forbidden-field` and the schema's additionalProperties are the same
+    rule, so the validator's version of it is suppressed however many keys are
+    involved."""
+    cur = rev("b" * 64, BASE, meta={**META, "delta": "x", "messages_added": []})
+    assert kinds(checks.check_metadata_shape(None, cur, ctx)) == [
+        ("metadata-shape", "forbidden-field")
+    ] * 2
 
 
 def test_conforming_metadata_passes(ctx):

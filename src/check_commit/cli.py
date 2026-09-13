@@ -181,7 +181,18 @@ def cmd_backtest(args) -> int:
     counts = collections.Counter()
     prev = None
     errors = []
+    republished = 0
     for ptr, tophash in pairs:
+        if prev is not None and prev.tophash == tophash:
+            # A re-publication of the manifest just checked. Checking it again
+            # would diff it against itself and store the empty result over the
+            # introducing publication's findings, since `by_hash` is keyed by
+            # top hash — so a `must_flag` expectation for that hash would fail
+            # for a reason the corpus never intended. The introducing
+            # publication is the one the expectations are written about, and it
+            # is also the one `_select` and `find_revision` resolve to.
+            republished += 1
+            continue
         cur = history.view(tophash, pointer=ptr)
         report = run(prev, cur, ctx)
         if report.error:
@@ -190,6 +201,11 @@ def cmd_backtest(args) -> int:
         for f in report.findings:
             counts[(f.check, f.severity)] += 1
         prev = cur
+    if republished:
+        print(
+            f"  ({republished} pointer(s) re-published a manifest already checked "
+            f"and were skipped)"
+        )
 
     def findings_for(prefix):
         return [f for t, fs in by_hash.items() if t.startswith(prefix) for f in fs]
@@ -251,7 +267,9 @@ def cmd_backtest(args) -> int:
     for (check, sev), n in sorted(counts.items()):
         print(f"  {check:<20} {sev:<17} {n}")
     flagged = sum(1 for fs in by_hash.values() if any(f.severity == DEFECT for f in fs))
-    print(f"revisions with defects: {flagged}/{len(pairs)}")
+    # Denominator is manifests checked, not pointers listed: a re-published
+    # pointer was skipped above and is not a revision anything was decided on.
+    print(f"revisions with defects: {flagged}/{len(by_hash)}")
 
     if args.report:
         out = {

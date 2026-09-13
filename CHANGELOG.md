@@ -5,6 +5,54 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-09-12
+
+Review of #22 found four soundness problems, three of them in code added by
+0.3.2–0.3.5. Two were checks that could pass while proving less than they
+claimed, and one was a claim about CI that was simply false.
+
+### Fixed
+
+- An S3 object version is proof of identical content only as a whole identity.
+  `Entry.same_content_as` compared `versionId` strings alone, so two entries
+  backed at *different* objects that happened to share a version label would be
+  read as unchanged — and an entry may be backed at a different bucket and key
+  from one revision to the next, which is exactly the movement `key-drift`
+  observes. Worse, it accepted `versionId=null`, which S3 reports for every
+  object written while bucket versioning was suspended, so equal-sized content
+  under two digest algorithms could be classified as unchanged and skipped by
+  every diff-scoped check. `Entry.object_version` now yields
+  `(bucket, key, versionId)` and is `None` for a null or absent version, and
+  only a full match is taken as proof.
+- Metadata schema validation runs on every revision. It had been gated on the
+  hand-written §3 checks finding nothing, which hid faults that have no relation
+  to each other: metadata with a bad `status` *and* a non-object
+  `related_packages` reported only the status, and the type error would have
+  surfaced on a later revision as if it were new. Only the same fault is
+  suppressed now, and `required`/`additionalProperties` errors are suppressed
+  outright because `missing-required-field` and `forbidden-field` state those
+  two rules in the spec's own words. That equivalence is no longer assumed:
+  `test_vendored_schema_is_valid_and_pinned` pins the schema's `required`
+  against `FIXED_META_FIELDS` and its `patternProperties` against
+  `ROUTE_KEY_RE`, so the suppression cannot start hiding a real fault silently.
+- The backtest no longer lets a re-published pointer overwrite the findings of
+  the publication that introduced the manifest. `by_hash` is keyed by top hash,
+  so 0.3.5's decision to run the corpus through the pin's final publication
+  meant a duplicated hash was checked twice and the second run — a diff against
+  itself — stored an empty result over the real findings. A `must_flag`
+  expectation for that hash would then fail for a reason the corpus never
+  intended. Re-publications are skipped, reported in the run header, and the
+  `revisions with defects` denominator now counts manifests checked rather than
+  pointers listed.
+- The registered-schema comparison no longer claims a gate it does not have.
+  Reading the registry needs credentials the `unit` workflow does not supply, so
+  a broad `except` turned the only registry comparison into a skip and 0.3.3
+  described it as failing a build it never ran in. `CHECK_COMMIT_REQUIRE_REGISTRY=1`
+  now turns an unreachable registry into a failure, `scripts/preflight.sh`
+  collects it with the backtests as the credentialed pre-deploy gate, and a
+  second credential-free test holds the vendored schema to being well-formed and
+  still saying what the checker relies on.
+
 ## [0.3.5] - 2026-09-12
 
 One manifest may sit under several pointers, and three places reasoned about
@@ -137,8 +185,9 @@ enforces does not get to set the verdict.
 - `registered-schema-drift` moves out of the per-revision checks into
   `tests/test_registered_schema.py`. Its `paths` was always empty, which was
   the tell: the comparison is between this repo's vendored copy and a registry
-  object, and neither side is something a package author wrote. A stale
-  vendored copy now fails our build instead of five of someone else's packages.
+  object, and neither side is something a package author wrote. It is a gate on
+  us rather than on five of someone else's packages — see 0.3.6 for where that
+  gate actually runs, which this entry originally overstated.
 - `backtest/expectations-current.yaml` moves `c29849f2` and `fc69cb94` from
   `must_flag` to `must_not_flag` for `key-drift`, scoped to that check so their
   other expectations still stand. They are pinned as negatives rather than
@@ -643,6 +692,7 @@ every field the old checks read is forbidden rather than merely absent. See
 - Operational scripts: `scripts/build-lambda.sh`, `scripts/sns.py`, and
   `scripts/packager-roundtrip.py`.
 
+[0.3.6]: https://github.com/quiltdata/auto-checker/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/quiltdata/auto-checker/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/quiltdata/auto-checker/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/quiltdata/auto-checker/compare/v0.3.2...v0.3.3

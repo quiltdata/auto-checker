@@ -243,8 +243,14 @@ def check_workflow_stamp(prev, cur, ctx) -> list[Finding]:
 def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
     findings = []
     meta = cur.meta or {}
+    # Metadata keys the §3 checks below fault by name. Schema validation runs
+    # regardless and reports everything else, so an independent violation is
+    # never hidden behind an unrelated one; `covered` only stops the same fault
+    # being stated twice.
+    covered: set[str] = set()
     for field in policy.FIXED_META_FIELDS:
         if field not in meta:
+            covered.add(field)
             findings.append(
                 Finding(
                     check="metadata-shape",
@@ -257,6 +263,7 @@ def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
             )
     status = meta.get("status")
     if status is not None and status not in ("active", "closed"):
+        covered.add("status")
         findings.append(
             Finding(
                 check="metadata-shape",
@@ -269,6 +276,7 @@ def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
     for key in sorted(meta):
         if key in policy.FIXED_META_FIELDS or policy.ROUTE_KEY_RE.match(key):
             continue
+        covered.add(key)
         findings.append(
             Finding(
                 check="metadata-shape",
@@ -282,20 +290,43 @@ def check_metadata_shape(prev, cur, ctx) -> list[Finding]:
         )
     # The checks above name the §3 conditions in the spec's own terms, which is
     # worth more than a validator's message. Everything else the schema says —
-    # value types, the route-key pattern, the shape of related_packages — is
-    # checked by validating against it, as a backstop when nothing above fired
-    # so a single fault is not reported twice.
+    # value types, the route-key pattern, the shape of related_packages — comes
+    # from validating against it.
     #
     # This is what `schema-drift/registered-schema-drift` was standing in for.
     # Comparing schema *versions* declared five packages defective while all
     # nine conformed; asking whether the metadata conforms answers the question
     # the proxy was approximating, and names the offending field when it fails.
-    if not findings:
-        findings.extend(_schema_violations(cur, ctx))
+    #
+    # Validation runs on every revision. Gating it on the §3 checks finding
+    # nothing would hide faults that have no relation to each other: metadata
+    # with a bad `status` *and* a non-object `related_packages` would report
+    # only the status, and the type error would surface later as if it were new.
+    findings.extend(_schema_violations(cur, ctx, covered))
     return findings
 
 
-def _schema_violations(cur, ctx) -> list[Finding]:
+def _schema_error_keys(err) -> set[str] | None:
+    """The metadata keys a validation error is about, or None if a §3 check owns
+    the rule outright.
+
+    `required` and `additionalProperties` restate, key for key, exactly what
+    `missing-required-field` and `forbidden-field` already report: those checks
+    read the same two rules the schema states, since `FIXED_META_FIELDS` mirrors
+    `required` and `ROUTE_KEY_RE` mirrors `patternProperties`. The §3 findings
+    say it in the spec's own words, so the validator adds nothing — and it is
+    those two rules, not the reported keys, that
+    `tests/test_registered_schema.py` pins so this equivalence keeps holding.
+
+    Every other error is about a specific field, and is reported unless a §3
+    check already faulted that same field.
+    """
+    if err.validator in ("required", "additionalProperties"):
+        return None
+    return {str(err.path[0])} if err.path else set()
+
+
+def _schema_violations(cur, ctx, covered: set[str] = frozenset()) -> list[Finding]:
     pol = ctx.policy
     if not pol.vendored_schema:
         return []
@@ -312,6 +343,9 @@ def _schema_violations(cur, ctx) -> list[Finding]:
     validator = jsonschema.Draft202012Validator(schema)
     findings = []
     for err in sorted(validator.iter_errors(cur.meta or {}), key=lambda e: list(e.path)):
+        keys = _schema_error_keys(err)
+        if keys is None or (keys and keys <= set(covered)):
+            continue  # already stated in the spec's own terms above
         where = "/".join(str(p) for p in err.path) or "(root)"
         findings.append(
             Finding(
