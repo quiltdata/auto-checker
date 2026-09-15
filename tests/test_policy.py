@@ -30,6 +30,45 @@ def test_watchlist_is_regime_scoped():
     assert not pol.is_watchlisted("protocol/occurrence.md", PRE_MIGRATION)
 
 
+def test_watchlist_covers_both_normative_surfaces():
+    """056 moved the governing content from `protocol/` to `actions/` and
+    `reference/`, and the watchlist has to name both.
+
+    Watching only the retired path left the guard matching nothing at all once
+    that path was gone. Watching only the new surface is the mirror mistake, and
+    a worse one to make silently: `protocol/occurrence.md` would stop being
+    examined, so the corpus's `must_not_flag d1a6032c` — the deliberate
+    retirement that `check_watchlist` reads a controlling task for — would pass
+    without testing anything.
+
+    Asserted here rather than left to the backtest, which needs registry
+    credentials that repository CI does not have.
+    """
+    pol = Policy.for_package("occurrence/spec")
+    # the retired surface, kept so historical judgments stay decidable
+    assert pol.is_watchlisted("protocol/occurrence.md")
+    # the live surface named by the package README
+    assert pol.is_watchlisted("actions/write-a-task.md")
+    assert pol.is_watchlisted("reference/write-discipline.md")
+    assert pol.is_watchlisted("reference/legacy-forms.md")
+    # navigational, optional, and support surfaces stay out
+    for path in (
+        "README.md",
+        "packages.md",
+        "rubric/01-closure-levels.md",
+        "tools/canonicalize_verification_json.py",
+        # a documentation copy; §2 requires no package copy of the registered
+        # schema, and `schema-drift` already treats its deletion as a note
+        "reference/occurrence-workflow-schema.json",
+        # issue turns are covered by immutability, READMEs are mutable by §5
+        "issues/056-operating-layer/056.05-Owner-task.md",
+        "issues/056-operating-layer/README.md",
+    ):
+        assert not pol.is_watchlisted(path), path
+    # the patterns are anchored: a nested path under the surface is not watched
+    assert not pol.is_watchlisted("actions/archive/old-procedure.md")
+
+
 def test_retired_tunables_are_not_live_config():
     """`structured_file_fields` and the collision adjudications survive only
     under `pre_migration`, where no current-regime check can reach them."""

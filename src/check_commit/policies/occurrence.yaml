@@ -40,8 +40,31 @@ vendored_schema: occurrence-workflow-schema.json
 # covered by immutability and issue READMEs are expressly mutable summaries
 # (§5), so neither belongs here; `README.md` and `packages.md` are
 # navigational indexes that legitimately contract when the model simplifies.
+#
+# The list spans both surfaces this prefix has had, because one policy governs
+# the whole history the corpus replays. Dropping the retired path would not
+# make the checker tidier, it would make it forget: the 051 migration's
+# 29206 -> 7142 shrink of `protocol/occurrence.md` is a pinned finding, and the
+# 056 retirement of that same path is what exercises the retirement allowance
+# in `check_watchlist`. Neither judgment survives the pattern's removal.
+#
+# `actions/` and `reference/` are the surface 056 moved the governing content
+# to, named by the package README: `actions/` holds the live operating
+# procedures, each "the canonical production surface for its own grammar", and
+# `reference/` the shared mechanics. Watching only the retired path left the
+# guard pointed at nothing — zero of 106 entries — while three normative
+# reference documents lost their trailing newline under a commit message
+# claiming byte-identical content (f456e097569f).
+#
+# `.md` only. `reference/occurrence-workflow-schema.json` is a documentation
+# copy whose authoritative version is the registered schema, and §2 requires no
+# package copy at all — `schema-drift` already treats its deletion as a note.
+# `rubric/` is optional evaluation material and `tools/` is support code;
+# neither carries standing guidance.
 watchlist:
   - "^protocol/occurrence\\.md$"
+  - "^actions/[^/]+\\.md$"
+  - "^reference/[^/]+\\.md$"
 
 # A size decrease on a watchlisted artifact counts as declared only if a
 # sentence of the commit message names the file AND contains one of these
