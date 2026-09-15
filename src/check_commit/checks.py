@@ -905,6 +905,200 @@ def _decrease_declared(path: str, text: str, markers) -> bool:
     return False
 
 
+# -- a watched path retired by the task that authorized the write ------------
+#
+# A watchlisted path can disappear two ways, and only one is a fault. The
+# fault is silent loss: standing guidance vanishes and nothing in the record
+# says it was meant to. The other is an approved refactor that retires a live
+# path on purpose — 056's redistribution of `protocol/occurrence.md` into the
+# `actions/` and `reference/` surface — where the record does say so, in the
+# controlling task, because that is where §5 puts the instruction a write
+# executes.
+#
+# Which document may speak is deliberately narrow. Only the filed turns of an
+# issue the revision *routes to* count: the route key in package metadata (§8)
+# is the machine-checkable link from a write to the issue governing it, and §5
+# makes a filed turn immutable, so the declaration is fixed at filing rather
+# than composed to excuse a deletion after the fact. What it must say is also
+# narrow: the exact logical path, inside a line or list that names a
+# retirement. Nothing here reads the commit message for intent and nothing
+# infers a retirement from entry-count arithmetic — the watchlist keeps its
+# whole value, catching a disappearance no authorization covers.
+#
+# The bound on this, stated plainly: anyone who can write the package can also
+# write a turn. The declaration is evidence of authorization, not proof of it,
+# on the same footing as `Policy.is_own_turn`. The consequence is bounded the
+# same way — a removal reached this way is reported as a note naming the
+# document that cleared it, so a reviewer is pointed straight at the
+# authorization to judge it, and nothing passes unremarked.
+
+FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+HEADING_RE = re.compile(r"^\s*#{1,6}\s")
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?P<item>.*)$")
+MIGRATION_ARROW_RE = re.compile(r"\s(?:-+>|=>|→)\s")
+
+# `Do not delete or relocate any other path.` — a prohibition carries the same
+# stems as a declaration and must not be read as one, or the sentence bounding
+# a refactor would authorize everything it excludes.
+PROHIBITION_RE = re.compile(
+    r"\b(?:do(?:es)?\s+not|don't|must\s+not|may\s+not|shall\s+not|cannot|can't|never|"
+    r"without|no\s+authoriz|not\s+authoriz)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_declaration(line: str, markers) -> bool:
+    low = line.lower()
+    return any(m in low for m in markers) and not PROHIBITION_RE.search(low)
+
+
+def _listed_path(entry: str) -> str:
+    """The logical path a list entry, fenced line, or table row is *about*.
+
+    The first path-like token, which is the subject of the row in every form a
+    task actually uses: a bare path in a fenced block, an annotated bullet
+    (``- `protocol/occurrence.md` — retired, content moved to ...``), and a
+    disposition table (`| protocol/occurrence.md | moved | actions/... |`).
+
+    Taking the first and not any is what keeps this strict. A row about some
+    other path that merely mentions the watched one as a *destination* —
+    `actions/write-a-task.md (from protocol/occurrence.md)` — is a row about
+    `actions/write-a-task.md`, and retires nothing.
+    """
+    bare = entry.strip().strip("`").strip("*_ ").rstrip(",;:").strip()
+    tokens = PATH_TOKEN_RE.findall(bare)
+    return tokens[0] if tokens else bare
+
+
+def _declaration_scope(text: str, markers) -> tuple[list[str], list[str]]:
+    """(prose lines that declare a retirement, entries they enumerate).
+
+    A declaration is a line naming a retirement, plus the list it introduces —
+    markdown's two forms both count, a fenced block of bare paths and a bullet
+    or numbered list. Scope ends at the next heading or at a paragraph that
+    names no retirement, so a path enumerated under some later, unrelated
+    heading does not inherit an earlier declaration.
+    """
+    prose: list[str] = []
+    listed: list[str] = []
+    intro = False
+    in_fence = False
+    for line in text.splitlines():
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            if intro:
+                listed.append(line)
+            continue
+        if not line.strip():
+            continue  # a blank line separates an intro from its list
+        if HEADING_RE.match(line):
+            intro = _is_declaration(line, markers)
+            if intro:
+                prose.append(line)
+            continue
+        item = LIST_ITEM_RE.match(line)
+        if item:
+            if intro:
+                listed.append(item.group("item"))
+            elif _is_declaration(line, markers):
+                prose.append(line)
+            continue
+        intro = _is_declaration(line, markers)
+        if intro:
+            prose.append(line)
+    return prose, listed
+
+
+def _retirement_declared(path: str, text: str, markers, entries) -> str | None:
+    """How `text` declares `path` retired, or None if it does not.
+
+    Three forms, all requiring the exact logical path:
+
+    - enumerated: the path is an entry of a list a retirement declaration
+      introduces (`Delete these old live paths ...:` and the block under it);
+    - named: a sentence declaring a retirement contains the path itself;
+    - superseded: a line maps the path to a successor logical path that the
+      revision actually carries, which is a declared relocation whether or not
+      the line reaches for one of the marker stems.
+    """
+    prose, listed = _declaration_scope(text, markers)
+    if any(_listed_path(entry) == path for entry in listed):
+        return "enumerated for deletion"
+    for line in prose:
+        for sentence in re.split(r"(?<=[.;:])\s+", line):
+            if path in sentence and _is_declaration(sentence, markers):
+                return "named in a retirement declaration"
+    for line in text.splitlines():
+        parts = MIGRATION_ARROW_RE.split(line, 1)
+        if len(parts) < 2 or path not in parts[0]:
+            continue
+        for token in PATH_TOKEN_RE.findall(parts[1]):
+            if token in entries and token != path:
+                return f"declared superseded by {token}"
+    return None
+
+
+def _contract_turns(cur: RevisionView) -> list[str]:
+    """Filed turns of the issues this revision routes to, latest first.
+
+    The route keys are §8's statement of which issue governs the write, so this
+    is the change contract the revision is accountable to — not any document
+    that happens to sit in the package. The issue README is excluded: §5 makes
+    it expressly mutable, and a declaration that can be rewritten later is not
+    the fixed authorization this allowance is reading for.
+
+    Every other document in the folder is a turn, whatever its filename. Turn
+    names are a §5 SHOULD and `check_turn_form` is what reports a departure
+    from them; letting the grammar decide whether a declaration counts would
+    make an authorization hinge on a naming preference. `056.04a-PM-...` is a
+    real example — a legitimately filed review turn that the canonical pattern
+    does not match.
+
+    Latest first, because a turn filename leads with a zero-padded turn number,
+    so reverse lexical order is reverse filing order, and §5 makes the highest
+    turn the end of the sequence. When several turns of a thread speak to the
+    same path, the operative instruction is the last one filed — an Owner task
+    reissued as `056.05` rather than the `056.01` proposal that opened the
+    thread.
+    """
+    turns: list[str] = []
+    for key in sorted(cur.meta or {}):
+        if key in policy.FIXED_META_FIELDS or not policy.ISSUE_FOLDER_RE.match(key):
+            continue
+        turns.extend(
+            lk
+            for lk in cur.entries
+            if posixpath.dirname(lk) == key
+            and lk.endswith(".md")
+            and posixpath.basename(lk) != "README.md"
+        )
+    return sorted(turns, reverse=True)
+
+
+def _removal_authorized(path: str, prev, cur, ctx) -> str | None:
+    """The controlling task's authorization for removing `path`, or None."""
+    markers = ctx.policy.retirement_markers
+    if not markers:
+        return None
+    for turn in _contract_turns(cur):
+        data = ctx.content(cur, turn)
+        if data is None:
+            continue
+        form = _retirement_declared(
+            path, data.decode("utf-8", errors="replace"), markers, cur.entries
+        )
+        if form is None:
+            continue
+        prefiled = prev is not None and cur.content_changed(prev, turn) is False
+        when = (
+            "filed before this revision" if prefiled else "filed in this revision"
+        )
+        return f"{form} by {turn} ({when})"
+    return None
+
+
 def check_watchlist(prev, cur, ctx) -> list[Finding]:
     if prev is None:
         return []
@@ -936,16 +1130,37 @@ def check_watchlist(prev, cur, ctx) -> list[Finding]:
         rid = posixpath.basename(path).split("-", 1)[0]
         if any(posixpath.basename(a).split("-", 1)[0] == rid for a in added):
             continue
-        if not _decrease_declared(path, text, markers):
-            findings.append(
-                Finding(
-                    check="watchlist-size",
-                    severity=DEFECT,
-                    kind="undeclared-removal",
-                    paths=(path,),
-                    detail="watchlisted artifact removed with no reduction declared",
-                )
+        if _decrease_declared(path, text, markers):
+            ctx.note(
+                f"watchlist-size: {path} was removed, declared in the commit message"
             )
+            continue
+        # An approved retirement is declared where §5 puts the instruction a
+        # write executes: the controlling task. Current regime only — the
+        # pre-migration model has no route keys and no filed turns to read, so
+        # its watchlist judgments are unchanged.
+        authorization = (
+            _removal_authorized(path, prev, cur, ctx) if ctx.regime == CURRENT else None
+        )
+        if authorization:
+            ctx.note(
+                f"watchlist-size: {path} was removed, {authorization}. A watchlisted "
+                f"path may be retired by the task that authorized the write; the "
+                f"removal is recorded rather than faulted, and the declaration is "
+                f"evidence of authorization rather than proof of it"
+            )
+            continue
+        findings.append(
+            Finding(
+                check="watchlist-size",
+                severity=DEFECT,
+                kind="undeclared-removal",
+                paths=(path,),
+                detail="watchlisted artifact removed with neither a reduction declared "
+                "in the commit message nor a retirement of this exact logical path "
+                "declared by a filed turn of an issue this revision routes to",
+            )
+        )
     return findings
 
 

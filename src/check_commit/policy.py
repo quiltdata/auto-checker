@@ -128,6 +128,7 @@ class Policy:
     vendored_schema: str  # our copy of the registered schema, in policies/
     watchlist: tuple[re.Pattern, ...]
     decrease_markers: tuple[str, ...]
+    retirement_markers: tuple[str, ...]
     float_ok_packages: frozenset[str]  # §7: current normative guidance may float
     legacy: Legacy
 
@@ -189,6 +190,7 @@ class Policy:
             vendored_schema=raw.get("vendored_schema", ""),
             watchlist=tuple(re.compile(p) for p in raw.get("watchlist", [])),
             decrease_markers=tuple(raw.get("decrease_markers", [])),
+            retirement_markers=tuple(raw.get("retirement_markers", [])),
             float_ok_packages=frozenset(raw.get("float_ok_packages", [])),
             legacy=Legacy(
                 watchlist=tuple(re.compile(p) for p in legacy_raw.get("watchlist", [])),
