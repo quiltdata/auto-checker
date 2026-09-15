@@ -32,6 +32,73 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
+## [0.3.7] - 2026-09-14
+
+`watchlist-size` reported the 056 refactor of `occurrence/spec`
+(`d1a6032ce3be`) as a defect for removing `protocol/occurrence.md`. The removal
+was authorized: issues/056's filed Owner task enumerates that exact logical
+path for deletion once its content has been redistributed into the new
+`actions/` and `reference/` surface, and the write did redistribute it. The
+check was modelling only one way a watched path can disappear.
+
+### Fixed
+
+- A watchlisted path may now be retired by the task that authorized the write.
+  `watchlist-size/undeclared-removal` had one test for a removal — a reduction
+  declared in the commit message — so an approved refactor that retires a live
+  path deliberately was indistinguishable from silent loss of standing
+  guidance. It now also reads the filed turns of an issue the revision routes
+  to, and clears the removal when one declares that path retired: enumerated in
+  a list a retirement declaration introduces, named in such a sentence, or
+  mapped to a successor logical path the revision actually carries. The removal
+  is recorded as a note citing the authorizing document rather than passing
+  unremarked.
+
+  The rule is otherwise unchanged, and deliberately so. The declaration must
+  give the *exact logical path* — a basename will not do, which is stricter
+  than the commit-message test. A prohibition (`Do not delete or relocate any
+  other path`) is not a declaration, or the sentence bounding a refactor would
+  authorize everything it excludes. Only an issue the revision *routes to*
+  speaks for the write, since the route key is §8's machine-checkable link from
+  a write to its governing issue. The issue README never authorizes, because §5
+  makes it expressly mutable and a declaration that can be rewritten afterwards
+  is not a fixed authorization. Nothing reads the commit message for intent and
+  nothing infers a retirement from entry-count arithmetic.
+
+  What this cannot do is prove authorization: anyone who can write the package
+  can write a turn, the same bound already documented on `Policy.is_own_turn`.
+  The consequence is bounded the same way — the note names the document that
+  cleared the removal, so a reviewer is pointed straight at the authorization
+  to judge it.
+
+- The allowance is scoped to removal. `undeclared-shrink` still reads the
+  commit message alone: a task authorizing a deletion says nothing about how
+  much of a *surviving* file may go, and gradual erosion is the class the
+  watchlist is most useful against. `fc69cb94`, where
+  `protocol/occurrence.md` fell 29206 -> 7142 bytes during the 051 migration,
+  is still a defect in the corpus. The pre-migration regime is untouched: it
+  has neither route keys nor filed turns, and its judgments are unchanged.
+
+### Changed
+
+- The current-regime corpus runs to `d1a6032ce3be` instead of
+  `d2b7cf60a91a`, 44 pointers instead of 27, so the pin is the refactor this
+  release is about and a regression to DEFECT fails the gate. The seventeen
+  newly replayed revisions surfaced two pre-existing findings, both now pinned
+  rather than left to print unadjudicated: a second
+  `issue-routes/route-survives-closure` on issues/054, unrepaired at the pin
+  unlike the 053 one; and `turn-form/malformed-turn-name` on
+  `056.04a-PM-review-of-implementation-task.md`, a review turn with a
+  letter-suffixed turn number, recorded as known-unresolved because §5 states
+  the filename form as its only SHOULD. That turn is also part of the change
+  contract the pin's retirement is read from, which is why `_contract_turns`
+  treats every non-README document in a routed issue folder as a turn instead
+  of requiring the filename to parse first.
+
+- `policies/occurrence.yaml` gains `retirement_markers`, kept separate from
+  `decrease_markers`: a refactor that retires a live path says "delete",
+  "supersede" or "redistribute" and never needs to say "shrink".
+
 ## [0.3.6] - 2026-09-12
 
 Review of #22 found four soundness problems, three of them in code added by

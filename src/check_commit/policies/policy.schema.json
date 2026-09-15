@@ -40,6 +40,11 @@
       "items": { "type": "string" },
       "description": "Stems that count as declaring a reduction when in the same sentence as the file"
     },
+    "retirement_markers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Stems that make a controlling-task line a retirement declaration, admitting the removal of a watchlisted path it names by exact logical path"
+    },
     "float_ok_packages": {
       "type": "array",
       "items": { "type": "string" },

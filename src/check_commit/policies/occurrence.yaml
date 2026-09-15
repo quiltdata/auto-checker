@@ -61,6 +61,26 @@ decrease_markers:
   - retire
   - fold
 
+# Stems that make a line of a controlling task a retirement declaration.
+#
+# These are read only from the turns of the issue a revision routes to, and
+# only ever admit the removal of a watchlisted path the declaration names by
+# its exact logical path. They are the vocabulary of an intentional migration
+# rather than of a size reduction, which is why they are a separate list from
+# `decrease_markers`: a refactor that retires a live path says "delete",
+# "supersede" or "redistribute", and never needs to say "shrink".
+retirement_markers:
+  - delet
+  - remov
+  - retire
+  - relocat
+  - redistribut
+  - supersed
+  - replac
+  - split
+  - fold
+  - migrat
+
 # §7 requires cross-package evidence to be cited with a revision-pinned URI,
 # with one exception: "Current normative Spec guidance may float only when a
 # task intentionally asks for current rules." These packages may be cited
