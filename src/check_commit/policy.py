@@ -64,7 +64,9 @@ CLOSED_ISSUE_RE = re.compile(r"^issues/closed/(\d{3})-[^/]+$")
 
 # --- regime-independent forms ------------------------------------------------
 
-QUILT_URI_RE = re.compile(r"quilt\+s3://[^\s\)\]\"'`<>]+")
+# Closing delimiters from Markdown links and LaTeX commands are wrappers, not
+# URI data. A literal closing brace in a URI must be percent-encoded.
+QUILT_URI_RE = re.compile(r"quilt\+s3://[^\s\)\]\}\"'`<>]+")
 
 POLICY_DIR = pathlib.Path(__file__).parent / "policies"
 

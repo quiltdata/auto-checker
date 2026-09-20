@@ -1174,6 +1174,21 @@ def check_watchlist(prev, cur, ctx) -> list[Finding]:
 
 # -- every quilt+s3:// URI in a changed document resolves -------------------
 
+def _quilt_uri_body(uri: str) -> str:
+    """URI body with source-format wrappers removed at known boundaries.
+
+    LaTeX escapes the fragment marker in ``\\texttt{...}`` as ``\\#``. Accept
+    that one source representation only where the Quilt fragment must begin;
+    arbitrary backslashes and escapes elsewhere remain malformed URI data.
+    Closing braces are excluded by QUILT_URI_RE before this parser runs.
+    """
+    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    bucket, escaped, fragment = body.partition(r"\#package=")
+    if escaped and "#" not in bucket:
+        return f"{bucket}#package={fragment}"
+    return body
+
+
 def _is_illustrative(uri: str) -> bool:
     """A URI written as syntax, not as evidence.
 
@@ -1188,7 +1203,7 @@ def _is_illustrative(uri: str) -> bool:
     ellipsis inside a real path — `&path=records/...` — does not buy an
     exemption from either URI check.
     """
-    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    body = _quilt_uri_body(uri)
     if body.endswith("@"):
         return True
     bucket, _, frag = body.partition("#")
@@ -1207,7 +1222,7 @@ def _parse_quilt_uri(uri: str):
     `@latest` yields tophash None: it names no revision, which is exactly why
     §7 forbids it for cross-package evidence.
     """
-    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    body = _quilt_uri_body(uri)
     bucket, _, frag = body.partition("#")
     if not bucket or not frag:
         return None

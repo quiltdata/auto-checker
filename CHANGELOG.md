@@ -47,6 +47,16 @@ guard moves to the surface the content moved to.
 
 ### Fixed
 
+- `uri-resolution` now reads Quilt+ citations embedded in LaTeX
+  `\texttt{...}` without treating source-format delimiters as URI data. The
+  scanner stops before the closing `}`, and the parser accepts the narrowly
+  escaped `\#package=` fragment marker while leaving other malformed escapes
+  invalid. This clears two false `unresolvable-pin` findings on Theory turn
+  `081.04`: both cited 64-character revisions already existed, but 0.3.7 sent
+  Quilt a bucket ending in `\` and hashes ending in `}`. The checker reads the
+  stored source directly; it does not synthesize the Markdown-like link wrapper
+  shown by downstream rendering.
+
 - `pinned-citation` now distinguishes stable package navigation from evidence.
   The package-creation action requires each package's root `README.md` to carry
   stable package-level pointers to `occurrence/spec` and `occurrence/theory`;
