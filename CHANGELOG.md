@@ -32,7 +32,7 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
-## [0.3.7] - 2026-09-14
+## [0.3.7] - 2026-09-19
 
 `watchlist-size` reported the 056 refactor of `occurrence/spec`
 (`d1a6032ce3be`) as a defect for removing `protocol/occurrence.md`. The removal
@@ -46,6 +46,16 @@ the retired path guards nothing once the path is legitimately retired, so the
 guard moves to the surface the content moved to.
 
 ### Fixed
+
+- `pinned-citation` now distinguishes stable package navigation from evidence.
+  The package-creation action requires each package's root `README.md` to carry
+  stable package-level pointers to `occurrence/spec` and `occurrence/theory`;
+  those pathless Quilt+ URIs may float and are recorded as notes rather than
+  defects. The exception is structural and deliberately narrow: a URI naming a
+  path still requires a revision pin unless it is current Spec guidance, and a
+  bare package URI outside the root README still requires a pin. This clears
+  the false defect on `occurrence/interact` at `3d4cf3be9d8f` without weakening
+  the separately pinned Theory evidence in that README.
 
 - A watchlisted path may now be retired by the task that authorized the write.
   `watchlist-size/undeclared-removal` had one test for a removal — a reduction

@@ -711,11 +711,19 @@ def check_pinned_citation(prev, cur, ctx) -> list[Finding]:
             parsed = _parse_quilt_uri(uri)
             if parsed is None:
                 continue  # uri-resolution owns malformed URIs
-            bucket, pkg, tophash, _ = parsed
+            bucket, pkg, tophash, path = parsed
             if tophash:
                 continue
             if bucket == ctx.bucket and pkg == ctx.package:
                 continue  # a package citing itself is not cross-package evidence
+            # The package-creation action requires stable package-level
+            # pointers to Spec and Theory in the root README. A bare package
+            # URI there is navigation, not evidence. Keep this exact on both
+            # dimensions: issue READMEs may carry evidence, and a path names a
+            # particular artifact whose evidentiary use still requires a pin.
+            if doc == "README.md" and path is None:
+                ctx.note(f"pinned-citation: {doc} floats {pkg} (stable package pointer)")
+                continue
             if pkg in ctx.policy.float_ok_packages:
                 ctx.note(f"pinned-citation: {doc} floats {pkg} (§7 current-guidance exception)")
                 continue

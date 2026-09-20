@@ -107,7 +107,9 @@ retirement_markers:
 # §7 requires cross-package evidence to be cited with a revision-pinned URI,
 # with one exception: "Current normative Spec guidance may float only when a
 # task intentionally asks for current rules." These packages may be cited
-# unpinned; every other package may not.
+# unpinned as current guidance; every other evidence citation may not. Bare
+# package-level pointers in the root README are navigation rather than
+# evidence and are classified structurally by `check_pinned_citation`.
 float_ok_packages:
   - occurrence/spec
 
