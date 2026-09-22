@@ -32,7 +32,7 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
-## [0.3.7] - 2026-09-19
+## [0.3.7] - 2026-09-22
 
 `watchlist-size` reported the 056 refactor of `occurrence/spec`
 (`d1a6032ce3be`) as a defect for removing `protocol/occurrence.md`. The removal
@@ -190,6 +190,17 @@ guard moves to the surface the content moved to.
 - `policies/occurrence.yaml` gains `retirement_markers`, kept separate from
   `decrease_markers`: a refactor that retires a live path says "delete",
   "supersede" or "redistribute" and never needs to say "shrink".
+
+### Operational
+
+- Commit `142b568` was deployed to the notify-only `check-commit` stack in
+  `867344438354/us-east-1` on 2026-09-22. The CloudFormation change was limited
+  to the Lambda asset and completed successfully; the downloaded deployment
+  was verified as 0.3.7 with `WRITE_BACK=false`. Replaying the exact historical
+  `occurrence/gpt@e0109687fc9b` event through the production SQS/Lambda path
+  logged `occurrence/gpt@e0109687fc9b PASS`, confirming the final
+  turn-immutability correction on the revision that reproduced the defect after
+  the narrower object-version fix.
 
 ## [0.3.6] - 2026-09-12
 
