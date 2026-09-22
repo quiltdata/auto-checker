@@ -47,6 +47,18 @@ guard moves to the surface the content moved to.
 
 ### Fixed
 
+- `turn-immutability` now treats a shared immutable S3 object version as
+  stronger evidence than inconsistent equal-size digest metadata. On
+  `occurrence/gpt@07a54d48576c`, turn
+  `issues/017-jev-pivot/017.11-Kiro-decision-model-status-next-steps.md`
+  retained the exact same `(bucket, key, versionId)` and byte-for-byte content
+  as its parent, but the two manifests recorded different values under the
+  same `sha2-256-chunked` label. Comparing those values first produced a false
+  `turn-mutated` defect. For equal-size entries, complete object-version
+  identity now settles equality before digests; differing sizes still prove a
+  mutation, and different object versions retain the existing digest and
+  unresolved behavior.
+
 - `uri-resolution` now reads Quilt+ citations embedded in LaTeX
   `\texttt{...}` without treating source-format delimiters as URI data. The
   scanner stops before the closing `}`, and the parser accepts the narrowly

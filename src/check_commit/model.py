@@ -51,21 +51,22 @@ class Entry:
     def same_content_as(self, other: "Entry") -> bool | None:
         """True / False if content identity is decidable, None if it is not.
 
-        Comparable digests settle it. When two revisions were written under
-        different hash algorithms the digests carry no information about each
-        other, and one immutable S3 object version settles it instead: the same
-        version of the same object is the same bytes. With neither a common
-        algorithm nor a shared object version, content identity cannot be
-        decided from the manifests alone — a differing size still proves a
-        difference, but equal sizes prove nothing.
+        A differing size proves a difference first. For equal-size entries, one
+        immutable S3 object version is the strongest identity available: the
+        same version of the same object is the same bytes, even when two
+        manifests record inconsistent digest metadata for it. Otherwise,
+        comparable digests settle identity. When revisions use different hash
+        algorithms, the digests carry no information about each other. With
+        neither a shared object version nor a common algorithm, equal sizes
+        prove nothing.
         """
-        if self.hash and other.hash and self.hash_type == other.hash_type:
-            return self.hash == other.hash and self.size == other.size
         if self.size != other.size:
             return False
         mine = self.object_version
         if mine is not None and mine == other.object_version:
             return True
+        if self.hash and other.hash and self.hash_type == other.hash_type:
+            return self.hash == other.hash
         return None
 
 
