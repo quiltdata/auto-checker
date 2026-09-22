@@ -1,9 +1,9 @@
 """Access to a package's revision history via quilt3, with a local cache.
 
 quilt3 is the reader — manifests are never parsed by hand. The cache stores
-the derived RevisionView (and file contents keyed by entry hash) so the
-backtest is fast and repeatable after the first run. Content bytes are
-fetched from the versioned physical key recorded by quilt3.
+the derived RevisionView and file contents keyed by exact versioned physical
+identity, so the backtest is fast and repeatable after the first run. Content
+bytes are fetched from the versioned physical key recorded by quilt3.
 """
 
 from __future__ import annotations
@@ -127,10 +127,19 @@ class PackageHistory:
         entry = view.entries.get(path)
         if entry is None:
             return None
-        # entry hashes may be base64 (older manifests) — not filename-safe
+        # The physical URI includes bucket, key, and versionId, so it names the
+        # exact immutable bytes being cached. Manifest digests are only a
+        # fallback: they can be stale or inconsistent (occurrence/gpt@e0109687),
+        # and using one alone could alias two historical objects during the
+        # byte-for-byte immutability check.
+        identity = (
+            entry.physical_key
+            or (f"{entry.hash_type or 'unnamed'}:{entry.hash}" if entry.hash else None)
+            or f"{view.tophash}:{path}"
+        )
         import hashlib
 
-        key = hashlib.sha256((entry.hash or entry.physical_key or path).encode()).hexdigest()
+        key = hashlib.sha256(identity.encode()).hexdigest()
         cached = self.cache / "content" / key
         if cached.exists():
             return cached.read_bytes()

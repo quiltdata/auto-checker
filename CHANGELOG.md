@@ -47,17 +47,27 @@ guard moves to the surface the content moved to.
 
 ### Fixed
 
-- `turn-immutability` now treats a shared immutable S3 object version as
-  stronger evidence than inconsistent equal-size digest metadata. On
+- `turn-immutability` now verifies equal-size identity disagreements against
+  the bytes of both pinned S3 objects before setting a verdict. On
   `occurrence/gpt@07a54d48576c`, turn
   `issues/017-jev-pivot/017.11-Kiro-decision-model-status-next-steps.md`
   retained the exact same `(bucket, key, versionId)` and byte-for-byte content
   as its parent, but the two manifests recorded different values under the
   same `sha2-256-chunked` label. Comparing those values first produced a false
-  `turn-mutated` defect. For equal-size entries, complete object-version
-  identity now settles equality before digests; differing sizes still prove a
-  mutation, and different object versions retain the existing digest and
-  unresolved behavior.
+  `turn-mutated` defect. Preferring complete object-version identity fixed that
+  case, but was too narrow: `occurrence/gpt@e0109687fc9b`, published after that
+  deployment, copied the same 6343 bytes to a new object version while
+  inheriting the same stale manifest-hash disagreement and produced the defect
+  again. Both versions have content SHA-256
+  `b1fc7257ad9a6f10b34a4aff206d930d05ddbcf7fa67585bd8011b3cbb89f889`
+  and S3 composite SHA-256 `sKtFut5ICz43zpcQua+yhXOmzWvMAkDve0ZlGijiYO4=`.
+  A size difference remains immediate proof of mutation. Equal-size candidates
+  now compare the exact historical bytes: equal bytes become a note, differing
+  bytes remain a defect, and an unreadable version is known-unresolved rather
+  than a claim the checker cannot substantiate. The content cache is keyed by
+  complete versioned physical URI before any digest fallback, so stale or
+  colliding manifest metadata cannot alias two historical objects into one
+  cached payload during that comparison.
 
 - `uri-resolution` now reads Quilt+ citations embedded in LaTeX
   `\texttt{...}` without treating source-format delimiters as URI data. The
@@ -146,6 +156,15 @@ guard moves to the surface the content moved to.
   repository CI does not have.
 
 ### Changed
+
+- Python environments and dependency execution now use `uv` 0.12.15 instead
+  of direct `pip` and `venv` commands. CI pins `astral-sh/setup-uv` to the full
+  v7.6.0 commit and runs the locked project through `uv run`; preflight does the
+  same. The Lambda asset is built with `uv build` and its cross-platform
+  target plus binary-only dependencies are installed with `uv pip`, while CDK's
+  Python requirements are supplied ephemerally with `uv run
+  --with-requirements`. `uv.lock` makes the project/test environment
+  reproducible without conflating it with the arm64 Lambda asset resolution.
 
 - The current-regime corpus runs to `50319d33456a` instead of `d2b7cf60a91a`,
   57 pointers instead of 27. The pin is the closure of issue 056: the refactor

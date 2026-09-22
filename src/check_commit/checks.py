@@ -605,23 +605,35 @@ def check_turn_immutability(prev, cur, ctx) -> list[Finding]:
         if policy.turn_number(base) is None:
             continue
         old, new = prev.entries[path], cur.entries[path]
-        # `changed` counts undecidable content identity as changed so the
-        # content checks re-read the file. Here a change *is* the violation,
-        # so an undecidable comparison must not be reported as a mutation.
-        if cur.content_changed(prev, path) is None:
-            findings.append(
-                Finding(
-                    check="turn-immutability",
-                    severity=KNOWN_UNRESOLVED,
-                    kind="incomparable-turn-digest",
-                    paths=(path,),
-                    detail=f"{path} is recorded as {old.hash_type or 'an unnamed digest'} in "
-                    f"{prev.tophash[:12]} and {new.hash_type or 'an unnamed digest'} in "
-                    f"{cur.tophash[:12]}, on differing object versions; whether the filed "
-                    f"turn was mutated is unverified",
+        # A size difference proves mutation. For equal-size entries, manifest
+        # identity metadata is only a reason to compare the pinned bytes, not
+        # proof by itself: occurrence/gpt@e0109687 carried a stale
+        # sha2-256-chunked value for 017.11 while both S3 object versions held
+        # exactly the same bytes. Trusting the manifest mismatch produced a
+        # false defect. Read both immutable versions before making the claim.
+        if old.size == new.size:
+            old_data = ctx.content(prev, path)
+            new_data = ctx.content(cur, path)
+            if old_data is None or new_data is None:
+                findings.append(
+                    Finding(
+                        check="turn-immutability",
+                        severity=KNOWN_UNRESOLVED,
+                        kind="incomparable-turn-digest",
+                        paths=(path,),
+                        detail=f"{path} has differing manifest identity metadata in "
+                        f"{prev.tophash[:12]} and {cur.tophash[:12]}, but one or both "
+                        f"pinned objects could not be read; whether the filed turn was "
+                        f"mutated is unverified",
+                    )
                 )
-            )
-            continue
+                continue
+            if old_data == new_data:
+                ctx.note(
+                    f"turn-immutability: {path} is byte-identical despite differing "
+                    f"manifest identity metadata"
+                )
+                continue
         findings.append(
             Finding(
                 check="turn-immutability",

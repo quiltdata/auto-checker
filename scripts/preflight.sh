@@ -18,20 +18,24 @@ export CHECK_COMMIT_REQUIRE_REGISTRY=1
 : "${CHECK_COMMIT_REGISTRY_BUCKET:=protology}"
 export CHECK_COMMIT_REGISTRY_BUCKET
 
+run() {
+  uv run --frozen --extra dev "$@"
+}
+
 echo "== unit suite"
-pytest -q
+run pytest -q
 
 echo
 echo "== registered schema (must be reachable)"
-pytest tests/test_registered_schema.py -q
+run pytest tests/test_registered_schema.py -q
 
 echo
 echo "== backtest: pre-migration corpus"
-check-commit backtest
+run check-commit backtest
 
 echo
 echo "== backtest: current corpus"
-check-commit backtest --expectations backtest/expectations-current.yaml
+run check-commit backtest --expectations backtest/expectations-current.yaml
 
 echo
 echo "preflight passed"
