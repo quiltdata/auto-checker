@@ -954,110 +954,241 @@ def _decrease_declared(path: str, text: str, markers) -> bool:
 
 FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 HEADING_RE = re.compile(r"^\s*#{1,6}\s")
-LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?P<item>.*)$")
+LIST_ITEM_RE = re.compile(r"^(?P<indent>\s*)(?:[-*+]|\d+[.)])\s+(?P<item>.*)$")
+TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 MIGRATION_ARROW_RE = re.compile(r"\s(?:-+>|=>|→)\s")
 
-# `Do not delete or relocate any other path.` — a prohibition carries the same
-# stems as a declaration and must not be read as one, or the sentence bounding
-# a refactor would authorize everything it excludes.
+RETIREMENT_UNRELATED = "unrelated"
+RETIREMENT_AUTHORIZED = "authorized"
+RETIREMENT_PROHIBITED = "prohibited"
+
+# A prohibition carries the same stem as a declaration. Cover both modal
+# forms (`should not be removed`) and passive forms (`is not deleted`) rather
+# than allowing their retirement marker to turn a revocation into approval.
 PROHIBITION_RE = re.compile(
-    r"\b(?:do(?:es)?\s+not|don't|must\s+not|may\s+not|shall\s+not|cannot|can't|never|"
-    r"without|no\s+authoriz|not\s+authoriz)\b",
+    r"\b(?:do(?:es|ne)?|did|should|would|could|must|may|shall|can)\s+not\b|"
+    r"\b(?:don't|doesn't|didn't|shouldn't|wouldn't|couldn't|mustn't|cannot|can't|never|"
+    r"without|no\s+authoriz|not\s+authoriz)\b|"
+    r"\bnot\s+(?:(?:to|be)\s+)?(?:delet|remov|retir|relocat|redistribut|supersed|"
+    r"replac|split|fold|migrat)\w*\b",
     re.IGNORECASE,
 )
 
 
-def _is_declaration(line: str, markers) -> bool:
-    low = line.lower()
-    return any(m in low for m in markers) and not PROHIBITION_RE.search(low)
+def _declaration_disposition(text: str, markers) -> str:
+    """Whether a statement declares or prohibits a retirement."""
+    low = text.lower()
+    if not any(marker in low for marker in markers):
+        return RETIREMENT_UNRELATED
+    if PROHIBITION_RE.search(text):
+        return RETIREMENT_PROHIBITED
+    return RETIREMENT_AUTHORIZED
+
+
+def _path_tokens(text: str) -> list[str]:
+    """Complete path-like tokens, excluding matches inside longer paths.
+
+    `PATH_TOKEN_RE` is also used by the retired metadata parser, where changing
+    its historical grammar would be unrelated. The terminal check here keeps
+    `protocol/occurrence.md.backup` from being truncated to the watched path.
+    """
+    tokens = []
+    for match in PATH_TOKEN_RE.finditer(text):
+        suffix = text[match.end():]
+        if suffix[:1] in ("_", "/", "-"):
+            continue
+        if suffix.startswith(".") and len(suffix) > 1 and (
+            suffix[1].isalnum() or suffix[1] in "_/-"
+        ):
+            continue
+        tokens.append(match.group(0))
+    return tokens
 
 
 def _listed_path(entry: str) -> str:
-    """The logical path a list entry, fenced line, or table row is *about*.
-
-    The first path-like token, which is the subject of the row in every form a
-    task actually uses: a bare path in a fenced block, an annotated bullet
-    (``- `protocol/occurrence.md` — retired, content moved to ...``), and a
-    disposition table (`| protocol/occurrence.md | moved | actions/... |`).
-
-    Taking the first and not any is what keeps this strict. A row about some
-    other path that merely mentions the watched one as a *destination* —
-    `actions/write-a-task.md (from protocol/occurrence.md)` — is a row about
-    `actions/write-a-task.md`, and retires nothing.
-    """
+    """The first complete logical path, i.e. the subject of a structured row."""
     bare = entry.strip().strip("`").strip("*_ ").rstrip(",;:").strip()
-    tokens = PATH_TOKEN_RE.findall(bare)
+    tokens = _path_tokens(bare)
     return tokens[0] if tokens else bare
 
 
-def _declaration_scope(text: str, markers) -> tuple[list[str], list[str]]:
-    """(prose lines that declare a retirement, entries they enumerate).
+def _sentences(text: str) -> list[str]:
+    # A colon commonly introduces the exact path (`Delete this path: x.md`),
+    # so it is not a sentence boundary for this grammar.
+    return [part.strip() for part in re.split(r"(?<=[.;])\s+", text) if part.strip()]
 
-    A declaration is a line naming a retirement, plus the list it introduces —
-    markdown's two forms both count, a fenced block of bare paths and a bullet
-    or numbered list. Scope ends at the next heading or at a paragraph that
-    names no retirement, so a path enumerated under some later, unrelated
-    heading does not inherit an earlier declaration.
+
+def _logical_markdown_blocks(text: str) -> list[tuple[str, int, str]]:
+    """Return prose paragraphs and Markdown structures in source order.
+
+    Adjacent physical prose lines become one paragraph, so Markdown soft wraps
+    do not alter authorization. Lists retain indentation for nested scope;
+    fences and tables remain structural entries whose first path is their
+    subject rather than arbitrary prose whose destinations can match.
     """
-    prose: list[str] = []
-    listed: list[str] = []
-    intro = False
+    blocks: list[tuple[str, int, str]] = []
+    paragraph: list[str] = []
     in_fence = False
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            blocks.append(("prose", -1, " ".join(paragraph)))
+            paragraph.clear()
+
     for line in text.splitlines():
         if FENCE_RE.match(line):
+            flush_paragraph()
             in_fence = not in_fence
             continue
         if in_fence:
-            if intro:
-                listed.append(line)
+            if line.strip():
+                blocks.append(("entry", len(line) - len(line.lstrip()), line.strip()))
             continue
         if not line.strip():
-            continue  # a blank line separates an intro from its list
+            flush_paragraph()
+            continue
         if HEADING_RE.match(line):
-            intro = _is_declaration(line, markers)
-            if intro:
-                prose.append(line)
+            flush_paragraph()
+            blocks.append(("heading", -1, line.strip()))
             continue
         item = LIST_ITEM_RE.match(line)
         if item:
-            if intro:
-                listed.append(item.group("item"))
-            elif _is_declaration(line, markers):
-                prose.append(line)
+            flush_paragraph()
+            indent = len(item.group("indent").expandtabs(4))
+            blocks.append(("list", indent, item.group("item").strip()))
             continue
-        intro = _is_declaration(line, markers)
-        if intro:
-            prose.append(line)
-    return prose, listed
+        if TABLE_ROW_RE.match(line):
+            flush_paragraph()
+            blocks.append(("table", -1, line.strip()))
+            continue
+        paragraph.append(line.strip())
+    flush_paragraph()
+    return blocks
 
 
-def _retirement_declared(path: str, text: str, markers, entries) -> str | None:
-    """How `text` declares `path` retired, or None if it does not.
+def _declaration_scope(
+    text: str, markers
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Return declarative statements and inherited structured entries.
 
-    Three forms, all requiring the exact logical path:
-
-    - enumerated: the path is an entry of a list a retirement declaration
-      introduces (`Delete these old live paths ...:` and the block under it);
-    - named: a sentence declaring a retirement contains the path itself;
-    - superseded: a line maps the path to a successor logical path that the
-      revision actually carries, which is a declared relocation whether or not
-      the line reaches for one of the marker stems.
+    Each listed entry carries the disposition of its introducing declaration.
+    A declaration in a list item scopes only deeper items; this admits normal
+    nested Markdown without leaking authorization to later sibling sections.
     """
-    prose, listed = _declaration_scope(text, markers)
-    if any(_listed_path(entry) == path for entry in listed):
-        return "enumerated for deletion"
-    for line in prose:
-        for sentence in re.split(r"(?<=[.;:])\s+", line):
-            if path in sentence and _is_declaration(sentence, markers):
-                return "named in a retirement declaration"
-    for line in text.splitlines():
-        parts = MIGRATION_ARROW_RE.split(line, 1)
-        if len(parts) < 2 or path not in parts[0]:
+    statements: list[str] = []
+    listed: list[tuple[str, str]] = []
+    intros: list[tuple[int, str]] = []
+
+    for kind, indent, content in _logical_markdown_blocks(text):
+        if kind == "heading":
+            intros.clear()
+        elif kind == "prose":
+            intros.clear()
+
+        if kind == "list":
+            while intros and intros[-1][0] >= indent:
+                intros.pop()
+
+        sentence_dispositions = [
+            (sentence, _declaration_disposition(sentence, markers))
+            for sentence in _sentences(content)
+        ]
+        declarations = [
+            (sentence, disposition)
+            for sentence, disposition in sentence_dispositions
+            if disposition != RETIREMENT_UNRELATED
+        ]
+
+        if kind == "table":
+            # A table row is about its first path-bearing column. Never run the
+            # whole row through named-prose matching: later columns are
+            # dispositions and destinations, not additional subjects.
+            if _path_tokens(content):
+                disposition = declarations[-1][1] if declarations else (
+                    intros[-1][1] if intros else RETIREMENT_UNRELATED
+                )
+                if disposition != RETIREMENT_UNRELATED:
+                    listed.append((content, disposition))
             continue
-        for token in PATH_TOKEN_RE.findall(parts[1]):
-            if token in entries and token != path:
-                return f"declared superseded by {token}"
-    return None
+
+        if kind == "entry":
+            if intros:
+                listed.append((content, intros[-1][1]))
+            continue
+
+        statements.extend(
+            sentence
+            for sentence, disposition in sentence_dispositions
+            if disposition != RETIREMENT_UNRELATED or MIGRATION_ARROW_RE.search(sentence)
+        )
+        if declarations:
+            disposition = declarations[-1][1]
+            if kind == "list":
+                intros.append((indent, disposition))
+            else:
+                intros.append((-1, disposition))
+        elif kind == "list" and intros:
+            listed.append((content, intros[-1][1]))
+
+    return statements, listed
+
+
+def _retirement_declared(
+    path: str, text: str, markers, entries
+) -> tuple[str, str | None]:
+    """Classify this turn's instruction for one exact logical path.
+
+    The result is tri-state so a newer explicit prohibition stops the caller
+    from searching older turns and reviving superseded authorization.
+    Prohibitions dominate contradictory positive text within one turn.
+    """
+    statements, listed = _declaration_scope(text, markers)
+    authorizations: list[str] = []
+    prohibited = False
+    mapping_statements: set[int] = set()
+
+    # Mappings must be interpreted before generic named declarations. A
+    # migration verb cannot authorize an incomplete mapping whose successor is
+    # absent from the resulting revision.
+    for index, statement in enumerate(statements):
+        parts = MIGRATION_ARROW_RE.split(statement, 1)
+        if len(parts) < 2:
+            continue
+        mapping_statements.add(index)
+        if _listed_path(parts[0]) != path:
+            continue
+        if _declaration_disposition(statement, markers) == RETIREMENT_PROHIBITED:
+            prohibited = True
+            continue
+        successor = next(
+            (token for token in _path_tokens(parts[1]) if token in entries and token != path),
+            None,
+        )
+        if successor:
+            authorizations.append(f"declared superseded by {successor}")
+
+    for entry, disposition in listed:
+        if _listed_path(entry) != path:
+            continue
+        if disposition == RETIREMENT_PROHIBITED:
+            prohibited = True
+        else:
+            authorizations.append("enumerated for deletion")
+
+    for index, statement in enumerate(statements):
+        if index in mapping_statements or path not in _path_tokens(statement):
+            continue
+        disposition = _declaration_disposition(statement, markers)
+        if disposition == RETIREMENT_PROHIBITED:
+            prohibited = True
+        elif disposition == RETIREMENT_AUTHORIZED:
+            authorizations.append("named in a retirement declaration")
+
+    if prohibited:
+        return RETIREMENT_PROHIBITED, None
+    if authorizations:
+        return RETIREMENT_AUTHORIZED, authorizations[0]
+    return RETIREMENT_UNRELATED, None
 
 
 def _contract_turns(cur: RevisionView) -> list[str]:
@@ -1106,10 +1237,14 @@ def _removal_authorized(path: str, prev, cur, ctx) -> str | None:
         data = ctx.content(cur, turn)
         if data is None:
             continue
-        form = _retirement_declared(
+        disposition, form = _retirement_declared(
             path, data.decode("utf-8", errors="replace"), markers, cur.entries
         )
-        if form is None:
+        if disposition == RETIREMENT_PROHIBITED:
+            # The newest relevant turn controls. Do not continue backward and
+            # revive an authorization that a later filed turn revoked.
+            return None
+        if disposition == RETIREMENT_UNRELATED:
             continue
         prefiled = prev is not None and cur.content_changed(prev, turn) is False
         when = (

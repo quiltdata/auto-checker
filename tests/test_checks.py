@@ -979,6 +979,106 @@ protocol/occurrence.md -> reference/write-discipline.md
     ]
 
 
+def test_a_newer_prohibition_revokes_an_older_authorization(policy):
+    older = f"{FOLDER}/007.02-Owner-authorize-retirement.md"
+    newer = f"{FOLDER}/007.03-Owner-revoke-retirement.md"
+    entries = {**WATCHED, older: (100, "ho"), newer: (100, "hn")}
+    prev = rev("a" * 64, entries, meta=ROUTED)
+    cur = rev(
+        "b" * 64,
+        {**BASE, older: (100, "ho"), newer: (100, "hn")},
+        message="007.04 Write: retain the protocol surface; expected entry-count delta -1.",
+        meta=ROUTED,
+    )
+    ctx = FakeCtx(
+        policy,
+        contents={
+            older: b"Delete protocol/occurrence.md.",
+            newer: b"Do not delete protocol/occurrence.md.",
+        },
+    )
+    assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+        ("watchlist-size", "undeclared-removal")
+    ]
+
+
+def test_longer_path_tokens_do_not_name_the_watched_path(policy):
+    for named_path in (
+        "old/protocol/occurrence.md",
+        "protocol/occurrence.md.backup",
+    ):
+        body = f"Delete {named_path}.".encode()
+        prev, cur, ctx = _retire_ctx(policy, body)
+        assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+            ("watchlist-size", "undeclared-removal")
+        ]
+
+
+def test_prohibitions_apply_to_mappings_and_enumerated_entries(policy):
+    bodies = (
+        b"Do not migrate protocol/occurrence.md -> reference/write-discipline.md.",
+        b"Delete these old paths:\n\n- Do not delete protocol/occurrence.md\n",
+    )
+    for body in bodies:
+        prev, cur, ctx = _retire_ctx(policy, body)
+        assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+            ("watchlist-size", "undeclared-removal")
+        ]
+
+
+def test_modal_and_passive_negations_are_prohibitions(policy):
+    for statement in (
+        "protocol/occurrence.md should not be removed.",
+        "protocol/occurrence.md is not deleted.",
+    ):
+        prev, cur, ctx = _retire_ctx(policy, statement.encode())
+        assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+            ("watchlist-size", "undeclared-removal")
+        ]
+
+
+def test_migration_verb_does_not_bypass_successor_validation(policy):
+    prev, cur, ctx = _retire_ctx(
+        policy,
+        b"Migrate protocol/occurrence.md -> reference/write-discipline.md.",
+    )
+    assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+        ("watchlist-size", "undeclared-removal")
+    ]
+
+
+def test_a_table_destination_does_not_retire_that_path(policy):
+    prev, cur, ctx = _retire_ctx(policy, b"""# 007.02 Owner task
+
+| path | disposition | successor |
+| --- | --- | --- |
+| protocol/terminology.md | superseded | protocol/occurrence.md |
+""")
+    assert kinds(checks.check_watchlist(prev, cur, ctx)) == [
+        ("watchlist-size", "undeclared-removal")
+    ]
+
+
+def test_nested_retirement_list_is_in_declaration_scope(policy):
+    prev, cur, ctx = _retire_ctx(policy, b"""# 007.02 Owner task
+
+- Delete these old live paths:
+  - protocol/occurrence.md
+""")
+    assert checks.check_watchlist(prev, cur, ctx) == []
+    assert any("enumerated for deletion" in note for note in ctx.notes)
+
+
+def test_soft_wrapped_named_retirement_is_one_declaration(policy):
+    prev, cur, ctx = _retire_ctx(policy, b"""# 007.02 Owner task
+
+Delete this old live
+path: protocol/occurrence.md.
+""")
+    assert checks.check_watchlist(prev, cur, ctx) == []
+    assert any("named in a retirement declaration" in note for note in ctx.notes)
+
+
 def test_a_task_declaration_does_not_excuse_a_shrink(policy):
     """The allowance is scoped to removal. A watchlisted artifact that merely
     shrinks is still held to the commit message: silent erosion of standing
