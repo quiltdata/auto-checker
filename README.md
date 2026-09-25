@@ -37,6 +37,7 @@ You need:
 - a Quilt stack in the target AWS account and region;
 - the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`, for write-back only;
 - one or more registry buckets containing the packages to check;
+- `uv` 0.12.15 for Python environments, dependency resolution, and commands;
 - AWS credentials for the target account and region; and
 - AWS CDK bootstrapped in that account and region.
 
@@ -117,23 +118,21 @@ Policy controls corpus-specific behavior. Protocol-level rules — issue folder 
 Install the package and run its tests:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-pytest -q
+uv sync --extra dev
+uv run --frozen --extra dev pytest -q
 ```
 
 Check the latest revision of a governed package:
 
 ```bash
-check-commit check \
+uv run --frozen check-commit check \
   "quilt+s3://<registry-bucket>#package=myprefix/some-package"
 ```
 
 Check a specific revision by full hash or unique hash prefix:
 
 ```bash
-check-commit check \
+uv run --frozen check-commit check \
   "quilt+s3://<registry-bucket>#package=myprefix/some-package@<tophash>"
 ```
 
@@ -143,7 +142,7 @@ Useful options:
 - `--regime current|pre-migration` checks against a contract other than the policy's own.
 - `--json` emits a machine-readable report.
 - `--offline` skips resolution of URIs that point outside the checked package, and skips comparing the vendored schema against the registered one.
-- `check-commit compose <URI>` previews the issue turn without writing anything.
+- `uv run --frozen check-commit compose <URI>` previews the issue turn without writing anything.
 
 Exit codes are `0` for pass, `1` for one or more defects, and `2` for an engine or configuration error. Known-unresolved findings are reported but do not produce a failing exit code.
 
@@ -185,15 +184,15 @@ Policy files ship inside the Lambda asset, so rebuild after every policy change:
 ```bash
 bash scripts/build-lambda.sh
 
-python3 -m venv .venv-cdk
-.venv-cdk/bin/pip install -r cdk/requirements.txt
+# Resolve the Python CDK libraries ephemerally through uv when running CDK.
+uv run --frozen --with-requirements cdk/requirements.txt python -c "import aws_cdk"
 ```
 
-`cdk/requirements.txt` provides the Python construct library. The CDK CLI is a separate npm package, so run it with `npx` and point `--app` at the virtualenv's interpreter so the app can import `aws_cdk`:
+`cdk/requirements.txt` provides the Python construct library. The CDK CLI is a separate npm package, so run it with `npx`; its `--app` command uses `uv run` to supply the Python CDK libraries without a separately managed virtualenv:
 
 ```bash
 (cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
-  --app "../.venv-cdk/bin/python app.py" \
+  --app "uv run --frozen --with-requirements requirements.txt python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
@@ -207,7 +206,7 @@ The CLI version is pinned deliberately: `cdk/requirements.txt` holds `aws-cdk-li
 Every context key above is defaulted in `cdk/cdk.json`, so a deployment of the `occurrence` corpus described above is just:
 
 ```bash
-(cd cdk && npx --yes aws-cdk@2.1118.0 deploy --app "../.venv-cdk/bin/python app.py")
+(cd cdk && npx --yes aws-cdk@2.1118.0 deploy --app "uv run --frozen --with-requirements requirements.txt python app.py")
 ```
 
 This creates:
@@ -229,7 +228,7 @@ To check and alert without writing responses, deploy with:
 
 ```bash
 (cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
-  --app "../.venv-cdk/bin/python app.py" --context writeBack=false ...)
+  --app "uv run --frozen --with-requirements requirements.txt python app.py" --context writeBack=false ...)
 ```
 
 Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
@@ -284,7 +283,7 @@ These are created without SNS actions, so they change state without sending anyt
 
 SNS email delivery is plain text, so the topic carries prose rather than the report's JSON: a subject line that says what happened, then defects, known-unresolved findings and notes in separate sections, then a catalog link to the revision. The wording lives in `policies/<prefix>-notify.md` — the same template seam `compose` uses for issue turns, so what a notification says is policy rather than code.
 
-The JSON report is still produced and still authoritative; `lambda_handler` prints it to CloudWatch Logs, where a machine consumer belongs. `check-commit check --json` prints the same thing locally.
+The JSON report is still produced and still authoritative; `lambda_handler` prints it to CloudWatch Logs, where a machine consumer belongs. `uv run --frozen check-commit check --json` prints the same thing locally.
 
 ## Checks performed
 
@@ -367,7 +366,7 @@ After changing a prefix policy:
 pytest -q
 bash scripts/build-lambda.sh
 (cd cdk && npx --yes aws-cdk@2.1118.0 deploy \
-  --app "../.venv-cdk/bin/python app.py" \
+  --app "uv run --frozen --with-requirements requirements.txt python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
   --context quiltStackName=<quilt-stack-name> \
@@ -375,11 +374,11 @@ bash scripts/build-lambda.sh
   --context writeBack=true)
 ```
 
-For the `occurrence` policy, `check-commit backtest` replays a pinned acceptance corpus and verifies the expected true positives, required false negatives, and revisions that must come back clean. There are two corpora, one per regime, because a single pin cannot cover both contracts:
+For the `occurrence` policy, `uv run --frozen check-commit backtest` replays a pinned acceptance corpus and verifies the expected true positives, required false negatives, and revisions that must come back clean. There are two corpora, one per regime, because a single pin cannot cover both contracts:
 
 ```bash
-check-commit backtest --expectations backtest/expectations-current.yaml
-check-commit backtest --expectations backtest/expectations.yaml
+uv run --frozen check-commit backtest --expectations backtest/expectations-current.yaml
+uv run --frozen check-commit backtest --expectations backtest/expectations.yaml
 ```
 
 `expectations-current.yaml` pins `occurrence/spec` on `protology`, whose history contains the closure-metadata repair the route check is built for. `expectations.yaml` pins `occurrence/probability` before the 2026-08-13 metadata migration and declares `regime: pre-migration`, so the retired checks are exercised at full strength against the corpus they were written for.
@@ -390,14 +389,14 @@ A retarget cannot serve stale views from the old registry. `check-commit` namesp
 
 ## Development
 
-Run the test suite with `pytest -q`. The core engine and Lambda use the same policy loader and checks, so local CLI results exercise the same checking behavior used after deployment.
+Run the test suite with `uv run --frozen --extra dev pytest -q`. The core engine and Lambda use the same policy loader and checks, so local CLI results exercise the same checking behavior used after deployment.
 
-The CDK stack has its own assertions in `tests/test_cdk_stack.py`, which need `aws-cdk-lib` and a built Lambda asset. They skip under a plain `pytest -q`, so to run them:
+The CDK stack has its own assertions in `tests/test_cdk_stack.py`, which need `aws-cdk-lib` and a built Lambda asset. Run them with the CDK requirements supplied ephemerally by uv:
 
 ```bash
-pip install -r cdk/requirements.txt
 bash scripts/build-lambda.sh
-pytest tests/test_cdk_stack.py -q
+uv run --frozen --extra dev --with-requirements cdk/requirements.txt \
+  pytest tests/test_cdk_stack.py -q
 ```
 
 They assert relations rather than snapshot the template: that the queue's visibility timeout is not below the function timeout (which Lambda rejects at deploy, not at synth), that it follows the 6x retry ratio, and that notify-only grants no write access and imports no Packager queue. CI runs them in a separate `cdk` job alongside `cdk synth`, neither of which needs AWS credentials.

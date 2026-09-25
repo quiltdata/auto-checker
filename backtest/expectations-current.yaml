@@ -1,10 +1,12 @@
 # Current-regime acceptance corpus for check-commit.
 #
-# `occurrence/spec` on `protology`, 27 revisions to the pin. Chosen because it
+# `occurrence/spec` on `protology`, 57 pointers to the pin. Chosen because it
 # is the package that defines the contract: it uses the §5 folder model
 # throughout, every revision is stamped `workflow: occurrence`, and its own
-# history contains a closure-metadata repair — the pin's parent left a route
-# set on a closed issue and the pin removes it.
+# history contains the classes this corpus exists to hold steady — a
+# closure-metadata repair, the 056 refactor that retires a watchlisted path
+# under an explicit authorization, and the undeclared shrinks of the surface
+# that replaced it.
 #
 # Companion corpus: backtest/expectations.yaml, the pre-migration regime.
 #
@@ -18,14 +20,27 @@
 regime: current
 package: occurrence/spec
 registry: s3://protology
-pin: d2b7cf60a91ab769498df49cca15253c9eb03c551d8ab2cb96d00695e7caaa5a
+# The pin is the closure of issue 056: the refactor that redistributed
+# `protocol/*` and `jobs/*` into the `actions/*` and `reference/*` surface is
+# complete, accepted, cleaned up, and the issue is closed with its route
+# cleared. It ends the corpus because the package is at a settled state there,
+# and because the range now contains the whole arc the watchlist is judged on —
+# the deliberate retirement of a watched path at `d1a6032c` and the first
+# undeclared shrinks of the surface that replaced it.
+pin: 50319d33456a63c7d05c9ed4818d0923e710a33ddbae0b66fbe466588e5bf838
 
 must_flag:
   # -- route integrity: §8 step 2 requires closure to clear the route --------
-  # The pin's own commit message is "053 closure metadata repair: remove stale
+  # d2b7cf60's commit message is "053 closure metadata repair: remove stale
   # route after closed disposition". 3ce3c15d is the revision it repairs: it
   # set issues/053's README to Status: closed and left the route in place.
   3ce3c15d:
+    checks: [issue-routes]
+    class: route-survives-closure
+
+  # The same class again on issues/054: the README reads Status: closed while
+  # the route is still set. Unrepaired at the pin, unlike 053.
+  3ae2cb19:
     checks: [issue-routes]
     class: route-survives-closure
 
@@ -65,6 +80,36 @@ must_flag:
     checks: [watchlist-size]
     class: undeclared-shrink
 
+  # -- the surface that replaced protocol/, now that it is watched -----------
+  # Watching only `protocol/occurrence.md` left the guard pointed at nothing
+  # once 056 retired that path: zero of 106 entries. These two revisions are
+  # what the gap let through, and they are the reason `actions/` and
+  # `reference/` are on the watchlist.
+  #
+  # "056.09 Write 1: repair bounded semantic-preservation defects in four
+  # audited live files" shrank a live action document by 10 bytes. A repair may
+  # well need to, but §4's declaration duty is what makes the difference
+  # visible, and the message names no reduction of this file.
+  767d9f8e:
+    checks: [watchlist-size]
+    class: undeclared-shrink
+
+  # "056.13 cleanup Write 1: normalize three live reference logical entries onto
+  # physical reference/ keys with byte-identical content" — the content was not
+  # byte-identical. All three copies dropped their trailing newline
+  # (`b'ack.\n'` -> `b'back.'`); the two `.md` files are watched and reported,
+  # and the JSON is not on the watchlist because §2 requires no package copy of
+  # the registered schema at all.
+  #
+  # A newline is a small thing to fault, and pinning it is deliberate. The claim
+  # was byte-identical and nothing else in the engine tests such a claim:
+  # `key-drift` observes only placement, and the digest comparison changed
+  # algorithm across these entries. Sized-based shrink detection is the only
+  # thing that noticed at all.
+  f456e097:
+    checks: [watchlist-size]
+    class: undeclared-shrink
+
   # -- turn filenames: §5 makes pure numeric noncanonical for new turns -----
   53ef2e8e: {checks: [turn-form], class: numeric-turn-name}
   e8b80c19: {checks: [turn-form], class: numeric-turn-name}
@@ -75,7 +120,39 @@ must_flag:
 # back clean; the two no-op verification revisions must not manufacture
 # findings from an empty diff.
 must_not_flag:
-  - hash: d2b7cf60  # the repair: route removed, nothing else touched
+  # -- a watchlisted path may be retired by the task that authorized it ------
+  # The pin removes protocol/occurrence.md, which is the whole of the current
+  # watchlist, and redistributes it into actions/* and reference/*. That is
+  # not the silent loss the watchlist exists to catch: issues/056's filed
+  # Owner task enumerates the exact logical path under "Delete these old live
+  # paths only after their current content has been redistributed".
+  #
+  # The class the contract had not modelled is a semantic successor with an
+  # intentional live-path retirement. `watchlist-size` now reads the filed
+  # turns of an issue the revision routes to and records the removal as a note
+  # naming the authorizing document, instead of faulting it. Pinned here so
+  # the allowance keeps working and so a regression to DEFECT fails the gate.
+  #
+  # This expectation is only meaningful while `protocol/occurrence.md` stays on
+  # the watchlist. Drop that pattern and the removal is not examined at all, so
+  # this would pass for the wrong reason and the allowance would go untested
+  # against the revision it was written for.
+  #
+  # The strictness it does not give up is asserted in tests/test_checks.py: an
+  # exact logical path is required, a prohibition is not a declaration, an
+  # unrouted issue does not speak for the write, the mutable issue README
+  # never authorizes, and a shrink is still held to the commit message alone.
+  - hash: d1a6032c
+    checks: [watchlist-size]
+    class: watched-path-retired-by-the-controlling-task
+
+  # 056 closed in place with its route cleared, which is what §8 step 2 asks
+  # and the inverse of the 053 and 054 failures pinned above. The pin.
+  - hash: 50319d33
+    checks: [issue-routes]
+    class: closure-clears-its-own-route
+
+  - hash: d2b7cf60  # the 053 route repair: route removed, nothing else touched
   - hash: 0237777f  # 053 README moved to H1-first
   - hash: 6f0d11f5  # protocol cleanup, -6 entries, declared and arithmetic
   - hash: ec34d58a  # no-op metadata verification
@@ -105,3 +182,24 @@ must_not_flag:
   - hash: fc69cb94
     checks: [key-drift]
     class: logical-physical-placement-is-not-a-defect
+
+# Adjudications the corpus records as known-unresolved rather than as faults.
+known_unresolved:
+  # `056.04a-PM-review-of-implementation-task.md` — a review turn filed with a
+  # letter-suffixed turn number, which the §5 filename form does not admit. §5
+  # states that form as its only SHOULD, so the departure is recorded and not
+  # faulted. It matters twice over: this same turn is part of the change
+  # contract the pin's retirement is read from, and `_contract_turns`
+  # deliberately does not require a turn filename to parse before its
+  # declaration counts.
+  - hash: 7bea0b03
+    checks: [turn-form]
+    paths_contain: 056.04a
+
+  # `056.12a-PM-reference-key-divergence.md` — the same letter-suffixed form,
+  # and the turn in which the package independently recorded the logical/physical
+  # divergence across `reference/` that `key-drift` had been noting. 056.13 then
+  # normalized those three entries, which is where the trailing newlines went.
+  - hash: 9d836af3
+    checks: [turn-form]
+    paths_contain: 056.12a

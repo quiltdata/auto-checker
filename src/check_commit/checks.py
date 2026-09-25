@@ -605,23 +605,35 @@ def check_turn_immutability(prev, cur, ctx) -> list[Finding]:
         if policy.turn_number(base) is None:
             continue
         old, new = prev.entries[path], cur.entries[path]
-        # `changed` counts undecidable content identity as changed so the
-        # content checks re-read the file. Here a change *is* the violation,
-        # so an undecidable comparison must not be reported as a mutation.
-        if cur.content_changed(prev, path) is None:
-            findings.append(
-                Finding(
-                    check="turn-immutability",
-                    severity=KNOWN_UNRESOLVED,
-                    kind="incomparable-turn-digest",
-                    paths=(path,),
-                    detail=f"{path} is recorded as {old.hash_type or 'an unnamed digest'} in "
-                    f"{prev.tophash[:12]} and {new.hash_type or 'an unnamed digest'} in "
-                    f"{cur.tophash[:12]}, on differing object versions; whether the filed "
-                    f"turn was mutated is unverified",
+        # A size difference proves mutation. For equal-size entries, manifest
+        # identity metadata is only a reason to compare the pinned bytes, not
+        # proof by itself: occurrence/gpt@e0109687 carried a stale
+        # sha2-256-chunked value for 017.11 while both S3 object versions held
+        # exactly the same bytes. Trusting the manifest mismatch produced a
+        # false defect. Read both immutable versions before making the claim.
+        if old.size == new.size:
+            old_data = ctx.content(prev, path)
+            new_data = ctx.content(cur, path)
+            if old_data is None or new_data is None:
+                findings.append(
+                    Finding(
+                        check="turn-immutability",
+                        severity=KNOWN_UNRESOLVED,
+                        kind="incomparable-turn-digest",
+                        paths=(path,),
+                        detail=f"{path} has differing manifest identity metadata in "
+                        f"{prev.tophash[:12]} and {cur.tophash[:12]}, but one or both "
+                        f"pinned objects could not be read; whether the filed turn was "
+                        f"mutated is unverified",
+                    )
                 )
-            )
-            continue
+                continue
+            if old_data == new_data:
+                ctx.note(
+                    f"turn-immutability: {path} is byte-identical despite differing "
+                    f"manifest identity metadata"
+                )
+                continue
         findings.append(
             Finding(
                 check="turn-immutability",
@@ -711,11 +723,19 @@ def check_pinned_citation(prev, cur, ctx) -> list[Finding]:
             parsed = _parse_quilt_uri(uri)
             if parsed is None:
                 continue  # uri-resolution owns malformed URIs
-            bucket, pkg, tophash, _ = parsed
+            bucket, pkg, tophash, path = parsed
             if tophash:
                 continue
             if bucket == ctx.bucket and pkg == ctx.package:
                 continue  # a package citing itself is not cross-package evidence
+            # The package-creation action requires stable package-level
+            # pointers to Spec and Theory in the root README. A bare package
+            # URI there is navigation, not evidence. Keep this exact on both
+            # dimensions: issue READMEs may carry evidence, and a path names a
+            # particular artifact whose evidentiary use still requires a pin.
+            if doc == "README.md" and path is None:
+                ctx.note(f"pinned-citation: {doc} floats {pkg} (stable package pointer)")
+                continue
             if pkg in ctx.policy.float_ok_packages:
                 ctx.note(f"pinned-citation: {doc} floats {pkg} (§7 current-guidance exception)")
                 continue
@@ -905,6 +925,335 @@ def _decrease_declared(path: str, text: str, markers) -> bool:
     return False
 
 
+# -- a watched path retired by the task that authorized the write ------------
+#
+# A watchlisted path can disappear two ways, and only one is a fault. The
+# fault is silent loss: standing guidance vanishes and nothing in the record
+# says it was meant to. The other is an approved refactor that retires a live
+# path on purpose — 056's redistribution of `protocol/occurrence.md` into the
+# `actions/` and `reference/` surface — where the record does say so, in the
+# controlling task, because that is where §5 puts the instruction a write
+# executes.
+#
+# Which document may speak is deliberately narrow. Only the filed turns of an
+# issue the revision *routes to* count: the route key in package metadata (§8)
+# is the machine-checkable link from a write to the issue governing it, and §5
+# makes a filed turn immutable, so the declaration is fixed at filing rather
+# than composed to excuse a deletion after the fact. What it must say is also
+# narrow: the exact logical path, inside a line or list that names a
+# retirement. Nothing here reads the commit message for intent and nothing
+# infers a retirement from entry-count arithmetic — the watchlist keeps its
+# whole value, catching a disappearance no authorization covers.
+#
+# The bound on this, stated plainly: anyone who can write the package can also
+# write a turn. The declaration is evidence of authorization, not proof of it,
+# on the same footing as `Policy.is_own_turn`. The consequence is bounded the
+# same way — a removal reached this way is reported as a note naming the
+# document that cleared it, so a reviewer is pointed straight at the
+# authorization to judge it, and nothing passes unremarked.
+
+FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+HEADING_RE = re.compile(r"^\s*#{1,6}\s")
+LIST_ITEM_RE = re.compile(r"^(?P<indent>\s*)(?:[-*+]|\d+[.)])\s+(?P<item>.*)$")
+TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+MIGRATION_ARROW_RE = re.compile(r"\s(?:-+>|=>|→)\s")
+
+RETIREMENT_UNRELATED = "unrelated"
+RETIREMENT_AUTHORIZED = "authorized"
+RETIREMENT_PROHIBITED = "prohibited"
+
+# A prohibition carries the same stem as a declaration. Cover both modal
+# forms (`should not be removed`) and passive forms (`is not deleted`) rather
+# than allowing their retirement marker to turn a revocation into approval.
+PROHIBITION_RE = re.compile(
+    r"\b(?:do(?:es|ne)?|did|should|would|could|must|may|shall|can)\s+not\b|"
+    r"\b(?:don't|doesn't|didn't|shouldn't|wouldn't|couldn't|mustn't|cannot|can't|never|"
+    r"without|no\s+authoriz|not\s+authoriz)\b|"
+    r"\bnot\s+(?:(?:to|be)\s+)?(?:delet|remov|retir|relocat|redistribut|supersed|"
+    r"replac|split|fold|migrat)\w*\b",
+    re.IGNORECASE,
+)
+
+
+def _declaration_disposition(text: str, markers) -> str:
+    """Whether a statement declares or prohibits a retirement."""
+    low = text.lower()
+    if not any(marker in low for marker in markers):
+        return RETIREMENT_UNRELATED
+    if PROHIBITION_RE.search(text):
+        return RETIREMENT_PROHIBITED
+    return RETIREMENT_AUTHORIZED
+
+
+def _path_tokens(text: str) -> list[str]:
+    """Complete path-like tokens, excluding matches inside longer paths.
+
+    `PATH_TOKEN_RE` is also used by the retired metadata parser, where changing
+    its historical grammar would be unrelated. The terminal check here keeps
+    `protocol/occurrence.md.backup` from being truncated to the watched path.
+    """
+    tokens = []
+    for match in PATH_TOKEN_RE.finditer(text):
+        suffix = text[match.end():]
+        if suffix[:1] in ("_", "/", "-"):
+            continue
+        if suffix.startswith(".") and len(suffix) > 1 and (
+            suffix[1].isalnum() or suffix[1] in "_/-"
+        ):
+            continue
+        tokens.append(match.group(0))
+    return tokens
+
+
+def _listed_path(entry: str) -> str:
+    """The first complete logical path, i.e. the subject of a structured row."""
+    bare = entry.strip().strip("`").strip("*_ ").rstrip(",;:").strip()
+    tokens = _path_tokens(bare)
+    return tokens[0] if tokens else bare
+
+
+def _sentences(text: str) -> list[str]:
+    # A colon commonly introduces the exact path (`Delete this path: x.md`),
+    # so it is not a sentence boundary for this grammar.
+    return [part.strip() for part in re.split(r"(?<=[.;])\s+", text) if part.strip()]
+
+
+def _logical_markdown_blocks(text: str) -> list[tuple[str, int, str]]:
+    """Return prose paragraphs and Markdown structures in source order.
+
+    Adjacent physical prose lines become one paragraph, so Markdown soft wraps
+    do not alter authorization. Lists retain indentation for nested scope;
+    fences and tables remain structural entries whose first path is their
+    subject rather than arbitrary prose whose destinations can match.
+    """
+    blocks: list[tuple[str, int, str]] = []
+    paragraph: list[str] = []
+    in_fence = False
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            blocks.append(("prose", -1, " ".join(paragraph)))
+            paragraph.clear()
+
+    for line in text.splitlines():
+        if FENCE_RE.match(line):
+            flush_paragraph()
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            if line.strip():
+                blocks.append(("entry", len(line) - len(line.lstrip()), line.strip()))
+            continue
+        if not line.strip():
+            flush_paragraph()
+            continue
+        if HEADING_RE.match(line):
+            flush_paragraph()
+            blocks.append(("heading", -1, line.strip()))
+            continue
+        item = LIST_ITEM_RE.match(line)
+        if item:
+            flush_paragraph()
+            indent = len(item.group("indent").expandtabs(4))
+            blocks.append(("list", indent, item.group("item").strip()))
+            continue
+        if TABLE_ROW_RE.match(line):
+            flush_paragraph()
+            blocks.append(("table", -1, line.strip()))
+            continue
+        paragraph.append(line.strip())
+    flush_paragraph()
+    return blocks
+
+
+def _declaration_scope(
+    text: str, markers
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Return declarative statements and inherited structured entries.
+
+    Each listed entry carries the disposition of its introducing declaration.
+    A declaration in a list item scopes only deeper items; this admits normal
+    nested Markdown without leaking authorization to later sibling sections.
+    """
+    statements: list[str] = []
+    listed: list[tuple[str, str]] = []
+    intros: list[tuple[int, str]] = []
+
+    for kind, indent, content in _logical_markdown_blocks(text):
+        if kind == "heading":
+            intros.clear()
+        elif kind == "prose":
+            intros.clear()
+
+        if kind == "list":
+            while intros and intros[-1][0] >= indent:
+                intros.pop()
+
+        sentence_dispositions = [
+            (sentence, _declaration_disposition(sentence, markers))
+            for sentence in _sentences(content)
+        ]
+        declarations = [
+            (sentence, disposition)
+            for sentence, disposition in sentence_dispositions
+            if disposition != RETIREMENT_UNRELATED
+        ]
+
+        if kind == "table":
+            # A table row is about its first path-bearing column. Never run the
+            # whole row through named-prose matching: later columns are
+            # dispositions and destinations, not additional subjects.
+            if _path_tokens(content):
+                disposition = declarations[-1][1] if declarations else (
+                    intros[-1][1] if intros else RETIREMENT_UNRELATED
+                )
+                if disposition != RETIREMENT_UNRELATED:
+                    listed.append((content, disposition))
+            continue
+
+        if kind == "entry":
+            if intros:
+                listed.append((content, intros[-1][1]))
+            continue
+
+        statements.extend(
+            sentence
+            for sentence, disposition in sentence_dispositions
+            if disposition != RETIREMENT_UNRELATED or MIGRATION_ARROW_RE.search(sentence)
+        )
+        if declarations:
+            disposition = declarations[-1][1]
+            if kind == "list":
+                intros.append((indent, disposition))
+            else:
+                intros.append((-1, disposition))
+        elif kind == "list" and intros:
+            listed.append((content, intros[-1][1]))
+
+    return statements, listed
+
+
+def _retirement_declared(
+    path: str, text: str, markers, entries
+) -> tuple[str, str | None]:
+    """Classify this turn's instruction for one exact logical path.
+
+    The result is tri-state so a newer explicit prohibition stops the caller
+    from searching older turns and reviving superseded authorization.
+    Prohibitions dominate contradictory positive text within one turn.
+    """
+    statements, listed = _declaration_scope(text, markers)
+    authorizations: list[str] = []
+    prohibited = False
+    mapping_statements: set[int] = set()
+
+    # Mappings must be interpreted before generic named declarations. A
+    # migration verb cannot authorize an incomplete mapping whose successor is
+    # absent from the resulting revision.
+    for index, statement in enumerate(statements):
+        parts = MIGRATION_ARROW_RE.split(statement, 1)
+        if len(parts) < 2:
+            continue
+        mapping_statements.add(index)
+        if _listed_path(parts[0]) != path:
+            continue
+        if _declaration_disposition(statement, markers) == RETIREMENT_PROHIBITED:
+            prohibited = True
+            continue
+        successor = next(
+            (token for token in _path_tokens(parts[1]) if token in entries and token != path),
+            None,
+        )
+        if successor:
+            authorizations.append(f"declared superseded by {successor}")
+
+    for entry, disposition in listed:
+        if _listed_path(entry) != path:
+            continue
+        if disposition == RETIREMENT_PROHIBITED:
+            prohibited = True
+        else:
+            authorizations.append("enumerated for deletion")
+
+    for index, statement in enumerate(statements):
+        if index in mapping_statements or path not in _path_tokens(statement):
+            continue
+        disposition = _declaration_disposition(statement, markers)
+        if disposition == RETIREMENT_PROHIBITED:
+            prohibited = True
+        elif disposition == RETIREMENT_AUTHORIZED:
+            authorizations.append("named in a retirement declaration")
+
+    if prohibited:
+        return RETIREMENT_PROHIBITED, None
+    if authorizations:
+        return RETIREMENT_AUTHORIZED, authorizations[0]
+    return RETIREMENT_UNRELATED, None
+
+
+def _contract_turns(cur: RevisionView) -> list[str]:
+    """Filed turns of the issues this revision routes to, latest first.
+
+    The route keys are §8's statement of which issue governs the write, so this
+    is the change contract the revision is accountable to — not any document
+    that happens to sit in the package. The issue README is excluded: §5 makes
+    it expressly mutable, and a declaration that can be rewritten later is not
+    the fixed authorization this allowance is reading for.
+
+    Every other document in the folder is a turn, whatever its filename. Turn
+    names are a §5 SHOULD and `check_turn_form` is what reports a departure
+    from them; letting the grammar decide whether a declaration counts would
+    make an authorization hinge on a naming preference. `056.04a-PM-...` is a
+    real example — a legitimately filed review turn that the canonical pattern
+    does not match.
+
+    Latest first, because a turn filename leads with a zero-padded turn number,
+    so reverse lexical order is reverse filing order, and §5 makes the highest
+    turn the end of the sequence. When several turns of a thread speak to the
+    same path, the operative instruction is the last one filed — an Owner task
+    reissued as `056.05` rather than the `056.01` proposal that opened the
+    thread.
+    """
+    turns: list[str] = []
+    for key in sorted(cur.meta or {}):
+        if key in policy.FIXED_META_FIELDS or not policy.ISSUE_FOLDER_RE.match(key):
+            continue
+        turns.extend(
+            lk
+            for lk in cur.entries
+            if posixpath.dirname(lk) == key
+            and lk.endswith(".md")
+            and posixpath.basename(lk) != "README.md"
+        )
+    return sorted(turns, reverse=True)
+
+
+def _removal_authorized(path: str, prev, cur, ctx) -> str | None:
+    """The controlling task's authorization for removing `path`, or None."""
+    markers = ctx.policy.retirement_markers
+    if not markers:
+        return None
+    for turn in _contract_turns(cur):
+        data = ctx.content(cur, turn)
+        if data is None:
+            continue
+        disposition, form = _retirement_declared(
+            path, data.decode("utf-8", errors="replace"), markers, cur.entries
+        )
+        if disposition == RETIREMENT_PROHIBITED:
+            # The newest relevant turn controls. Do not continue backward and
+            # revive an authorization that a later filed turn revoked.
+            return None
+        if disposition == RETIREMENT_UNRELATED:
+            continue
+        prefiled = prev is not None and cur.content_changed(prev, turn) is False
+        when = (
+            "filed before this revision" if prefiled else "filed in this revision"
+        )
+        return f"{form} by {turn} ({when})"
+    return None
+
+
 def check_watchlist(prev, cur, ctx) -> list[Finding]:
     if prev is None:
         return []
@@ -936,20 +1285,56 @@ def check_watchlist(prev, cur, ctx) -> list[Finding]:
         rid = posixpath.basename(path).split("-", 1)[0]
         if any(posixpath.basename(a).split("-", 1)[0] == rid for a in added):
             continue
-        if not _decrease_declared(path, text, markers):
-            findings.append(
-                Finding(
-                    check="watchlist-size",
-                    severity=DEFECT,
-                    kind="undeclared-removal",
-                    paths=(path,),
-                    detail="watchlisted artifact removed with no reduction declared",
-                )
+        if _decrease_declared(path, text, markers):
+            ctx.note(
+                f"watchlist-size: {path} was removed, declared in the commit message"
             )
+            continue
+        # An approved retirement is declared where §5 puts the instruction a
+        # write executes: the controlling task. Current regime only — the
+        # pre-migration model has no route keys and no filed turns to read, so
+        # its watchlist judgments are unchanged.
+        authorization = (
+            _removal_authorized(path, prev, cur, ctx) if ctx.regime == CURRENT else None
+        )
+        if authorization:
+            ctx.note(
+                f"watchlist-size: {path} was removed, {authorization}. A watchlisted "
+                f"path may be retired by the task that authorized the write; the "
+                f"removal is recorded rather than faulted, and the declaration is "
+                f"evidence of authorization rather than proof of it"
+            )
+            continue
+        findings.append(
+            Finding(
+                check="watchlist-size",
+                severity=DEFECT,
+                kind="undeclared-removal",
+                paths=(path,),
+                detail="watchlisted artifact removed with neither a reduction declared "
+                "in the commit message nor a retirement of this exact logical path "
+                "declared by a filed turn of an issue this revision routes to",
+            )
+        )
     return findings
 
 
 # -- every quilt+s3:// URI in a changed document resolves -------------------
+
+def _quilt_uri_body(uri: str) -> str:
+    """URI body with source-format wrappers removed at known boundaries.
+
+    LaTeX escapes the fragment marker in ``\\texttt{...}`` as ``\\#``. Accept
+    that one source representation only where the Quilt fragment must begin;
+    arbitrary backslashes and escapes elsewhere remain malformed URI data.
+    Closing braces are excluded by QUILT_URI_RE before this parser runs.
+    """
+    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    bucket, escaped, fragment = body.partition(r"\#package=")
+    if escaped and "#" not in bucket:
+        return f"{bucket}#package={fragment}"
+    return body
+
 
 def _is_illustrative(uri: str) -> bool:
     """A URI written as syntax, not as evidence.
@@ -965,7 +1350,7 @@ def _is_illustrative(uri: str) -> bool:
     ellipsis inside a real path — `&path=records/...` — does not buy an
     exemption from either URI check.
     """
-    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    body = _quilt_uri_body(uri)
     if body.endswith("@"):
         return True
     bucket, _, frag = body.partition("#")
@@ -984,7 +1369,7 @@ def _parse_quilt_uri(uri: str):
     `@latest` yields tophash None: it names no revision, which is exactly why
     §7 forbids it for cross-package evidence.
     """
-    body = uri[len("quilt+s3://"):].rstrip(".,;:")
+    body = _quilt_uri_body(uri)
     bucket, _, frag = body.partition("#")
     if not bucket or not frag:
         return None

@@ -18,16 +18,24 @@ mkdir -p "$OUT"
 # makes the build a function of the source tree rather than of file timestamps.
 rm -rf build/lib build/bdist.* 2>/dev/null || true
 
-python3 -m pip install . \
+WHEEL_DIR=build/wheel
+rm -rf "$WHEEL_DIR"
+uv build --wheel --out-dir "$WHEEL_DIR" --quiet
+wheel=("$WHEEL_DIR"/check_commit-*.whl)
+if [ "${#wheel[@]}" -ne 1 ] || [ ! -f "${wheel[0]}" ]; then
+  echo "error: expected exactly one check-commit wheel in $WHEEL_DIR" >&2
+  exit 1
+fi
+
+uv pip install "${wheel[0]}" \
   --target "$OUT" \
-  --platform manylinux2014_aarch64 \
-  --implementation cp \
+  --python-platform aarch64-manylinux2014 \
   --python-version 3.12 \
-  --only-binary=:all: \
-  --no-cache-dir \
+  --only-binary :all: \
+  --no-cache \
   --quiet
 
-# runtime provides boto3/botocore; strip them and pip metadata bulk
+# runtime provides boto3/botocore; strip them and installer metadata bulk
 rm -rf "$OUT"/boto3 "$OUT"/botocore "$OUT"/*.dist-info/RECORD 2>/dev/null || true
 
 # The asset is what actually runs, so prove it matches the source rather than

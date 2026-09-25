@@ -32,6 +32,176 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
+## [0.3.7] - 2026-09-22
+
+`watchlist-size` reported the 056 refactor of `occurrence/spec`
+(`d1a6032ce3be`) as a defect for removing `protocol/occurrence.md`. The removal
+was authorized: issues/056's filed Owner task enumerates that exact logical
+path for deletion once its content has been redistributed into the new
+`actions/` and `reference/` surface, and the write did redistribute it. The
+check was modelling only one way a watched path can disappear.
+
+Fixing that exposed a second half of the same problem. A watchlist naming only
+the retired path guards nothing once the path is legitimately retired, so the
+guard moves to the surface the content moved to.
+
+### Fixed
+
+- `turn-immutability` now verifies equal-size identity disagreements against
+  the bytes of both pinned S3 objects before setting a verdict. On
+  `occurrence/gpt@07a54d48576c`, turn
+  `issues/017-jev-pivot/017.11-Kiro-decision-model-status-next-steps.md`
+  retained the exact same `(bucket, key, versionId)` and byte-for-byte content
+  as its parent, but the two manifests recorded different values under the
+  same `sha2-256-chunked` label. Comparing those values first produced a false
+  `turn-mutated` defect. Preferring complete object-version identity fixed that
+  case, but was too narrow: `occurrence/gpt@e0109687fc9b`, published after that
+  deployment, copied the same 6343 bytes to a new object version while
+  inheriting the same stale manifest-hash disagreement and produced the defect
+  again. Both versions have content SHA-256
+  `b1fc7257ad9a6f10b34a4aff206d930d05ddbcf7fa67585bd8011b3cbb89f889`
+  and S3 composite SHA-256 `sKtFut5ICz43zpcQua+yhXOmzWvMAkDve0ZlGijiYO4=`.
+  A size difference remains immediate proof of mutation. Equal-size candidates
+  now compare the exact historical bytes: equal bytes become a note, differing
+  bytes remain a defect, and an unreadable version is known-unresolved rather
+  than a claim the checker cannot substantiate. The content cache is keyed by
+  complete versioned physical URI before any digest fallback, so stale or
+  colliding manifest metadata cannot alias two historical objects into one
+  cached payload during that comparison.
+
+- `uri-resolution` now reads Quilt+ citations embedded in LaTeX
+  `\texttt{...}` without treating source-format delimiters as URI data. The
+  scanner stops before the closing `}`, and the parser accepts the narrowly
+  escaped `\#package=` fragment marker while leaving other malformed escapes
+  invalid. This clears two false `unresolvable-pin` findings on Theory turn
+  `081.04`: both cited 64-character revisions already existed, but 0.3.7 sent
+  Quilt a bucket ending in `\` and hashes ending in `}`. The checker reads the
+  stored source directly; it does not synthesize the Markdown-like link wrapper
+  shown by downstream rendering.
+
+- `pinned-citation` now distinguishes stable package navigation from evidence.
+  The package-creation action requires each package's root `README.md` to carry
+  stable package-level pointers to `occurrence/spec` and `occurrence/theory`;
+  those pathless Quilt+ URIs may float and are recorded as notes rather than
+  defects. The exception is structural and deliberately narrow: a URI naming a
+  path still requires a revision pin unless it is current Spec guidance, and a
+  bare package URI outside the root README still requires a pin. This clears
+  the false defect on `occurrence/interact` at `3d4cf3be9d8f` without weakening
+  the separately pinned Theory evidence in that README.
+
+- A watchlisted path may now be retired by the task that authorized the write.
+  `watchlist-size/undeclared-removal` had one test for a removal — a reduction
+  declared in the commit message — so an approved refactor that retires a live
+  path deliberately was indistinguishable from silent loss of standing
+  guidance. It now also reads the filed turns of an issue the revision routes
+  to, and clears the removal when one declares that path retired: enumerated in
+  a list a retirement declaration introduces, named in such a sentence, or
+  mapped to a successor logical path the revision actually carries. The removal
+  is recorded as a note citing the authorizing document rather than passing
+  unremarked.
+
+  The rule is otherwise unchanged, and deliberately so. The declaration must
+  give the *exact logical path* — a basename will not do, which is stricter
+  than the commit-message test. A prohibition (`Do not delete or relocate any
+  other path`) is not a declaration, or the sentence bounding a refactor would
+  authorize everything it excludes. Only an issue the revision *routes to*
+  speaks for the write, since the route key is §8's machine-checkable link from
+  a write to its governing issue. The issue README never authorizes, because §5
+  makes it expressly mutable and a declaration that can be rewritten afterwards
+  is not a fixed authorization. Nothing reads the commit message for intent and
+  nothing infers a retirement from entry-count arithmetic.
+
+  What this cannot do is prove authorization: anyone who can write the package
+  can write a turn, the same bound already documented on `Policy.is_own_turn`.
+  The consequence is bounded the same way — the note names the document that
+  cleared the removal, so a reviewer is pointed straight at the authorization
+  to judge it.
+
+- The allowance is scoped to removal. `undeclared-shrink` still reads the
+  commit message alone: a task authorizing a deletion says nothing about how
+  much of a *surviving* file may go, and gradual erosion is the class the
+  watchlist is most useful against. `fc69cb94`, where
+  `protocol/occurrence.md` fell 29206 -> 7142 bytes during the 051 migration,
+  is still a defect in the corpus. The pre-migration regime is untouched: it
+  has neither route keys nor filed turns, and its judgments are unchanged.
+
+- The watchlist follows the surface it guards. Admitting the retirement of
+  `protocol/occurrence.md` without moving the guard left it matching **zero of
+  106 entries**: the governing content was now under `actions/` and
+  `reference/`, and nothing watched it. The gap was not hypothetical. `056.13`
+  normalized three `reference/` entries onto their own physical keys under a
+  commit message claiming *byte-identical content*, and all three dropped their
+  trailing newline (`b'ack.\n'` -> `b'back.'`). Nothing caught it: `key-drift`
+  observes only placement, no check tests a byte-identical claim, and the
+  digests changed algorithm across those entries so `Entry.same_content_as`
+  could not compare them. Size-based shrink detection was the only thing that
+  would have noticed, and it was pointed at a path that no longer existed.
+
+  `actions/*.md` and `reference/*.md` are now watched, per the package README:
+  `actions/` holds the live operating procedures, each "the canonical
+  production surface for its own grammar", and `reference/` the shared
+  mechanics. `README.md`, `packages.md`, `rubric/` and `tools/` stay out as
+  navigational, optional, and support surfaces, and
+  `reference/occurrence-workflow-schema.json` stays out because §2 requires no
+  package copy of the registered schema at all.
+
+  `^protocol/occurrence\.md$` is deliberately **kept** alongside them. One
+  policy governs the whole history the corpus replays, and dropping the retired
+  path would not tidy the checker, it would make it forget: the 051 migration's
+  29206 -> 7142 shrink is a pinned finding that disappears, and the 056
+  retirement stops being examined at all — so the corpus expectation covering
+  the new allowance would pass without testing it. Both halves are asserted in
+  `test_watchlist_covers_both_normative_surfaces`, in the credential-free suite,
+  because the backtest that would otherwise catch it needs registry access that
+  repository CI does not have.
+
+### Changed
+
+- Python environments and dependency execution now use `uv` 0.12.15 instead
+  of direct `pip` and `venv` commands. CI pins `astral-sh/setup-uv` to the full
+  v7.6.0 commit and runs the locked project through `uv run`; preflight does the
+  same. The Lambda asset is built with `uv build` and its cross-platform
+  target plus binary-only dependencies are installed with `uv pip`, while CDK's
+  Python requirements are supplied ephemerally with `uv run
+  --with-requirements`. `uv.lock` makes the project/test environment
+  reproducible without conflating it with the arm64 Lambda asset resolution.
+
+- The current-regime corpus runs to `50319d33456a` instead of `d2b7cf60a91a`,
+  57 pointers instead of 27. The pin is the closure of issue 056: the refactor
+  is complete, accepted, cleaned up, and the issue closed with its route
+  cleared, so the package is at a settled state and the range spans the whole
+  arc the watchlist is judged on — the authorized retirement at `d1a6032c` and
+  the first undeclared shrinks of the surface that replaced it.
+
+  Six findings in the newly replayed revisions are now pinned rather than left
+  to print unadjudicated. Two are the shrinks above (`767d9f8e`, where a
+  semantic repair took 10 bytes off `actions/onboard-an-owner.md` without
+  declaring a reduction, and `f456e097`). One is a second
+  `issue-routes/route-survives-closure` on issues/054, unrepaired at the pin
+  unlike the 053 one. Two are `turn-form/malformed-turn-name` on the
+  letter-suffixed `056.04a` and `056.12a` turns, known-unresolved because §5
+  states the filename form as its only SHOULD — `056.04a` is itself part of the
+  change contract the retirement is read from, which is why `_contract_turns`
+  treats every non-README document in a routed issue folder as a turn instead
+  of requiring the filename to parse first. The last is the pin itself, as a
+  `must_not_flag`: 056 closes in place and clears its own route, the inverse of
+  the 053 and 054 failures.
+
+- `policies/occurrence.yaml` gains `retirement_markers`, kept separate from
+  `decrease_markers`: a refactor that retires a live path says "delete",
+  "supersede" or "redistribute" and never needs to say "shrink".
+
+### Operational
+
+- Commit `142b568` was deployed to the notify-only `check-commit` stack in
+  `867344438354/us-east-1` on 2026-09-22. The CloudFormation change was limited
+  to the Lambda asset and completed successfully; the downloaded deployment
+  was verified as 0.3.7 with `WRITE_BACK=false`. Replaying the exact historical
+  `occurrence/gpt@e0109687fc9b` event through the production SQS/Lambda path
+  logged `occurrence/gpt@e0109687fc9b PASS`, confirming the final
+  turn-immutability correction on the revision that reproduced the defect after
+  the narrower object-version fix.
+
 ## [0.3.6] - 2026-09-12
 
 Review of #22 found four soundness problems, three of them in code added by
