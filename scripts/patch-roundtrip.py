@@ -6,8 +6,9 @@ Exercises write-back's registry call against a scratch package, standalone:
   1. put one stray object under the test package's prefix, which the patch
      does not name and must not pick up
   2. put one small note there and patch it in, pinned to the current head
-  3. assert the new revision is the parent plus exactly that note, its package
-     metadata kept, and stamped with the policy's workflow
+  3. assert the new revision is the parent plus exactly that note, every parent
+     entry and its metadata recorded unchanged, its package metadata kept, and
+     stamped with the policy's workflow
 
 Needs s3:PutObject on the test prefix and a registry API key whose user can
 write the bucket — by default the Secrets Manager secret the deployed Lambda
@@ -39,6 +40,7 @@ def main() -> int:
     ap.add_argument("--package", default="test/check-commit-roundtrip")
     args = ap.parse_args()
 
+    import quilt3
     from quilt3.util import PhysicalKey
 
     from check_commit.corpus import PackageHistory
@@ -82,6 +84,13 @@ def main() -> int:
     altered = [k for k, entry in prev.entries.items() if cur.entries.get(k) != entry]
     if altered:
         failures.append(f"parent entries removed or altered: {altered}")
+    # RevisionView entries carry no entry metadata; read it from the manifests.
+    old, new = (
+        quilt3.Package.browse(args.package, registry=f"s3://{args.bucket}", top_hash=h) for h in (prev_hash, new_hash)
+    )
+    meta_changed = [k for k, entry in old.walk() if k in new and new[k]._meta != entry._meta]
+    if meta_changed:
+        failures.append(f"parent entry metadata changed: {meta_changed}")
     if cur.meta != prev.meta:
         failures.append(f"package metadata changed: {prev.meta} -> {cur.meta}")
     if cur.workflow_id != workflow:
