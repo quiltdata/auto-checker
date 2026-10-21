@@ -257,6 +257,8 @@ def test_head_moving_before_the_patch_lands_files_nothing_and_raises_nothing(wir
             "message": "parent is not latest",
             "context": {"parent": "b" * 64, "latest": "b" * 64},
         },
+        # names no latest at all, so no newer revision will be checked
+        {"__typename": "OperationError", "name": "ParentNotLatest", "message": "parent is not latest", "context": None},
     ],
 )
 def test_failed_patch_alerts_and_a_redelivery_files_the_response(wired, rejection):

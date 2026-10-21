@@ -239,7 +239,7 @@ Notify-only mode is useful for evaluation or troubleshooting, and it is the chec
 
 Write-back files one immutable issue turn per checked revision with the registry's synchronous `packagePatch` ([quilt-specs#39](https://github.com/quiltdata/quilt-specs/pull/39)). The response revision is the checked revision plus that one turn, whatever else sits under the package's prefix; its package metadata carries forward unchanged.
 
-- If another revision became latest first, the registry returns `ParentNotLatest` and nothing is filed; the newer revision gets its own check, as for a stale event.
+- If the registry returns `ParentNotLatest` naming another latest revision, nothing is filed; that revision gets its own check, as for a stale event. One that names no other revision, as after write contention alone, is handled as a failure.
 - Any other failure publishes `write-back FAILED` to the findings topic, increments `EngineErrors`, and returns the event to the queue, where a redelivery tries again. After three receives the event is dead-lettered.
 - If the response revision fails its own checks, such as an unstamped workflow, the checker publishes `SELF-APPLICATION FAILED` and increments `SelfApplicationFailures`.
 

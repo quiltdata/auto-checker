@@ -31,7 +31,7 @@ class PatchError(Exception):
 class ParentNotLatest(PatchError):
     """Another revision became latest after the one the patch was pinned to."""
 
-    def __init__(self, message: str, latest: str | None):
+    def __init__(self, message: str, latest: str):
         super().__init__(message)
         self.latest = latest
 
@@ -71,7 +71,11 @@ class Registry:
         if kind == "PackagePushSuccess":
             return result["revision"]["hash"]
         if kind == "OperationError" and result["name"] == "ParentNotLatest":
-            raise ParentNotLatest(result["message"], (result.get("context") or {}).get("latest"))
+            # Without another latest, it lost only write contention (or the
+            # registry did not say): a failure like any other.
+            latest = (result.get("context") or {}).get("latest")
+            if latest and latest != parent:
+                raise ParentNotLatest(result["message"], latest)
         if kind == "OperationError":
             raise PatchError(f"{result['name']}: {result['message']}")
         if kind == "InvalidInput":
