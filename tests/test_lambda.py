@@ -223,8 +223,8 @@ def test_stale_event_for_superseded_revision_never_writes(monkeypatch):
 
 
 def test_head_moving_before_the_patch_lands_files_nothing_and_raises_nothing(wired):
-    """ParentNotLatest: another writer won. Its revision stays latest and gets
-    its own check; retrying ours would only fail the same way."""
+    """ParentNotLatest naming another latest: another writer won. Its revision
+    gets its own check; retrying ours would only fail the same way."""
     h, views = wired
     make_defective(views)
     h.http.result = {
@@ -250,6 +250,13 @@ def test_head_moving_before_the_patch_lands_files_nothing_and_raises_nothing(wir
         {"__typename": "OperationError", "name": "InsufficientPermissions", "message": "no", "context": None},
         # a stack whose registry predates the patch API
         {"errors": [{"message": "Cannot query field 'packagePatch' on type 'Mutation'."}]},
+        # lost only write contention: latest still names the checked revision
+        {
+            "__typename": "OperationError",
+            "name": "ParentNotLatest",
+            "message": "parent is not latest",
+            "context": {"parent": "b" * 64, "latest": "b" * 64},
+        },
     ],
 )
 def test_failed_patch_alerts_and_a_redelivery_files_the_response(wired, rejection):

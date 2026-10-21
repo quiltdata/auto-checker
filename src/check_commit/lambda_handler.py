@@ -192,17 +192,18 @@ class Handler:
                 f"{turn.logical_key}; expected entry-count delta +1",
                 workflow=self.policy.workflow,
             )
-        except ParentNotLatest as exc:
-            # Same as a stale event: the new head gets its own check.
-            return self._log(
-                Outcome(
-                    "checked",
-                    f"{handle}@{cur.tophash}: {len(report.findings)} finding(s), stale event "
-                    f"(head moved to {(exc.latest or '?')[:12]} before the patch), notify-only",
-                    report,
-                )
-            )
         except Exception as exc:
+            # A head that moved gets its own check, as for a stale event. A
+            # ParentNotLatest whose latest is still ours lost only write contention.
+            if isinstance(exc, ParentNotLatest) and exc.latest != cur.tophash:
+                return self._log(
+                    Outcome(
+                        "checked",
+                        f"{handle}@{cur.tophash}: {len(report.findings)} finding(s), stale event "
+                        f"(head moved to {(exc.latest or '?')[:12]} before the patch), notify-only",
+                        report,
+                    )
+                )
             self._notify(
                 f"[check-commit] write-back FAILED for {handle}@{cur.tophash[:12]}",
                 f"{turn.logical_key} was not confirmed filed: {exc}\n\n"
