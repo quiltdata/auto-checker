@@ -75,9 +75,13 @@ def main() -> int:
 
     cur, prev = history.view(new_hash), history.view(prev_hash)
     failures = []
-    added, removed, changed = cur.diff(prev)
-    if (added, removed, changed) != ([logical], [], []):
-        failures.append(f"diff is not exactly the probe file: added={added} removed={removed} changed={changed}")
+    # Compare recorded entries, not content: untouched entries must keep their
+    # physical versions and hashes too.
+    if set(cur.entries) - set(prev.entries) != {logical}:
+        failures.append(f"added entries are not exactly the probe file: {sorted(set(cur.entries) - set(prev.entries))}")
+    altered = [k for k, entry in prev.entries.items() if cur.entries.get(k) != entry]
+    if altered:
+        failures.append(f"parent entries removed or altered: {altered}")
     if cur.meta != prev.meta:
         failures.append(f"package metadata changed: {prev.meta} -> {cur.meta}")
     if cur.workflow_id != workflow:

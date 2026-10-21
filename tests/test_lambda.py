@@ -26,7 +26,7 @@ class FakeClient:
 
 class FakeRegistryHTTP:
     """The registry's GraphQL endpoint: records each request, answers `result`
-    as packagePatch's result, or as the whole response if it carries errors."""
+    as packagePatch's result, or as the whole response if it has no __typename."""
 
     def __init__(self, result):
         self.result = result
@@ -34,7 +34,7 @@ class FakeRegistryHTTP:
 
     def __call__(self, request, timeout=None):
         self.requests.append(request)
-        body = self.result if "errors" in self.result else {"data": {"packagePatch": self.result}}
+        body = self.result if "__typename" not in self.result else {"data": {"packagePatch": self.result}}
         return io.BytesIO(json.dumps(body).encode())
 
     def variables(self):
