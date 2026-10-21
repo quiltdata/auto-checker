@@ -1,12 +1,12 @@
 """The check-commit stack: rule -> SQS -> Lambda, SNS + alarms, minimal IAM.
 
 Shape per proj/260810-auto-checker 04 §6; permissions per §7. The Lambda
-holds no manifest-write access: package revisions are cut by the Quilt
-stack's Packager, reached via its exported queue.
+holds no manifest-write access: it stages its response object and asks the
+Quilt registry to patch it into the package, under the registry API key's
+identity.
 
-Write-back is the only reason this stack touches the Packager queue or holds
-any write grant, so `writeBack` gates both. A notify-only deployment carries no
-dependency on the queue exports and no ability to write anything.
+`writeBack` gates every write grant and the API key. A notify-only deployment
+can write nothing.
 """
 
 import pathlib
@@ -14,13 +14,13 @@ import pathlib
 import aws_cdk as cdk
 from aws_cdk import (
     Duration,
-    Fn,
     aws_cloudwatch as cw,
     aws_events as events,
     aws_events_targets as targets,
     aws_iam as iam,
     aws_lambda as lambda_,
     aws_lambda_event_sources as sources,
+    aws_secretsmanager as secretsmanager,
     aws_sns as sns,
     aws_sqs as sqs,
 )
@@ -45,26 +45,12 @@ class CheckCommitStack(cdk.Stack):
         super().__init__(scope, cid, **kwargs)
 
         ctx = self.node.try_get_context
-        quilt_stack = ctx("quiltStackName") or "open-quilt-bio"
         prefix = ctx("packagePrefix") or "occurrence"
         buckets = (ctx("registryBuckets") or "protology").split(",")
         write_back = str(ctx("writeBack") or "false").lower()
         writes_enabled = write_back == "true"
-
-        # The Packager queue is write-back's only destination, so a notify-only
-        # deployment neither imports it nor is granted anything against it.
-        # Fn.import_value is a template-level intrinsic: synth emits it
-        # unresolved, and CloudFormation fails the deployment with "No export
-        # named ... found" when it cannot resolve it. Importing unconditionally
-        # would therefore make a notify-only deployment fail to deploy against a
-        # Quilt stack that does not export the queue, rather than deploy fine
-        # without write-back.
-        packager_queue_arn = (
-            Fn.import_value(f"{quilt_stack}-PackagerQueueArn") if writes_enabled else ""
-        )
-        packager_queue_url = (
-            Fn.import_value(f"{quilt_stack}-PackagerQueueUrl") if writes_enabled else ""
-        )
+        registry_url = ctx("registryUrl") or "https://app-registry.quilt.bio"
+        api_key_secret = ctx("registryApiKeySecret") or "check-commit/registry-api-key"
 
         # -- ingress: default-bus rule -> SQS (04 §3, §6) --------------------
         dlq = sqs.Queue(self, "DLQ", retention_period=Duration.days(14))
@@ -120,9 +106,9 @@ class CheckCommitStack(cdk.Stack):
                 "XDG_CONFIG_HOME": "/tmp/xdg-config",
                 "PACKAGE_PREFIX": prefix,
                 "SNS_TOPIC_ARN": topic.topic_arn,
-                "PACKAGER_QUEUE_URL": packager_queue_url,
+                "REGISTRY_URL": registry_url if writes_enabled else "",
+                "REGISTRY_API_KEY_SECRET": api_key_secret if writes_enabled else "",
                 "WRITE_BACK": write_back,
-                "QUILT_STACK_NAME": quilt_stack,
                 "TQDM_DISABLE": "1",
             },
         )
@@ -131,7 +117,7 @@ class CheckCommitStack(cdk.Stack):
         )
 
         # -- permissions (04 §7): read prefix + .quilt, put message files only,
-        # send to the Packager, publish findings, emit metrics ------------------
+        # read the registry API key, publish findings, emit metrics -------------
         bucket_arns = [f"arn:aws:s3:::{b}" for b in buckets]
         fn.add_to_role_policy(
             iam.PolicyStatement(actions=["s3:ListBucket"], resources=bucket_arns)
@@ -144,9 +130,6 @@ class CheckCommitStack(cdk.Stack):
             )
         )
         if writes_enabled:
-            # Staging a turn file and asking the Packager to cut the revision are
-            # both write-back steps. Notify-only gets neither: the Lambda would
-            # not be able to use the grants legally anyway.
             fn.add_to_role_policy(
                 iam.PolicyStatement(
                     sid="WriteOwnMessagesOnly",
@@ -154,9 +137,7 @@ class CheckCommitStack(cdk.Stack):
                     resources=[f"{a}/{prefix}/*" for a in bucket_arns],
                 )
             )
-            fn.add_to_role_policy(
-                iam.PolicyStatement(actions=["sqs:SendMessage"], resources=[packager_queue_arn])
-            )
+            secretsmanager.Secret.from_secret_name_v2(self, "RegistryApiKey", api_key_secret).grant_read(fn)
         fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["cloudwatch:PutMetricData"],

@@ -14,7 +14,7 @@ Quilt package revision
   -> SQS queue
   -> checker Lambda
   -> SNS findings and CloudWatch metrics
-  -> issue turn through the Quilt Packager, when needed
+  -> issue turn through a registry package patch, when needed
 ```
 
 The package prefix controls both which revision events reach the checker and which policy file it loads. For example, a deployment with `packagePrefix=occurrence` checks `occurrence/*` packages with `src/check_commit/policies/occurrence.yaml`.
@@ -35,30 +35,31 @@ A governed corpus outlives the contract it was written under. Each policy declar
 You need:
 
 - a Quilt stack in the target AWS account and region;
-- the Quilt stack's Packager queue exports, `<quiltStackName>-PackagerQueueArn` and `<quiltStackName>-PackagerQueueUrl`, for write-back only;
+- for write-back only: a registry with the `packagePatch` mutation, and a Secrets Manager secret holding a registry API key (`qk_...`) for a Quilt user whose role can read and write the registry buckets;
 - one or more registry buckets containing the packages to check;
 - `uv` 0.12.15 for Python environments, dependency resolution, and commands;
 - AWS credentials for the target account and region; and
 - AWS CDK bootstrapped in that account and region.
 
-The auto-checker stack must run in the same account and region as the Quilt stack whose Packager queue it uses.
+The auto-checker stack must run in the same account and region as the Quilt stack whose package-revision events it receives.
 
-A notify-only deployment needs neither the Packager queue exports nor write access. With `writeBack=false` the stack does not import the exports and grants the Lambda no `s3:PutObject` or `sqs:SendMessage`, so it deploys against a Quilt stack that does not export a Packager queue at all. (A missing export is a deployment failure, not a synth failure: `Fn::ImportValue` is emitted unresolved and CloudFormation reports `No export named ... found`.)
+A notify-only deployment needs neither the API key nor write access. With `writeBack=false` the stack grants the Lambda no `s3:PutObject` and no read of the secret.
 
 ### Deployment context: the `occurrence` corpus
 
-The governed corpus lives in `s3://protology`, served by the open catalog at <https://open.quiltdata.com>. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it:
+The governed corpus lives in `s3://protology`, served by the catalog at <https://app.quilt.bio> (formerly open.quiltdata.com) from the Quilt stack `open-quilt-bio`. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it:
 
 | Context key | Value | Notes |
 | --- | --- | --- |
 | `account` | `867344438354` | the open account |
 | `region` | `us-east-1` | |
-| `quiltStackName` | `open-quilt-bio` | exports `open-quilt-bio-PackagerQueueArn` and `-PackagerQueueUrl` |
+| `registryUrl` | `https://app-registry.quilt.bio` | the registry write-back patches through |
+| `registryApiKeySecret` | `check-commit/registry-api-key` | the secret write-back reads its API key from |
 | `registryBuckets` | `protology` | |
 | `packagePrefix` | `occurrence` | `occurrence/*` — nine packages, including four (`born`, `fixed`, `history`, `transcripts`) that carry named-package pointers the catalog does not index. The EventBridge prefix filter matches revision events for all of them. |
 | `writeBack` | `false` | notify-only; see below |
 
-Write-back stays off for this deployment. `s3://protology/.quilt/workflows/config.yml` sets `is_workflow_required: True` with `default_workflow: occurrence`, so the registry validates every write, and whether the Packager stamps that workflow on a revision it cuts from a queue request is still unverified. Enable write-back only once the findings topic has a confirmed subscriber, which is where an unstamped self-write surfaces: the checker publishes self-application failures to `FindingsTopicArn` directly. The alarms carry no SNS action, so they are the CloudWatch view rather than a notification channel.
+Write-back stays off for this deployment until `scripts/patch-roundtrip.py` passes against it with the deployed API key ([#10](https://github.com/quiltdata/auto-checker/issues/10)). Enable it only once the findings topic has a confirmed subscriber: the checker publishes write-back and self-application failures to `FindingsTopicArn` directly. The alarms carry no SNS action, so they are the CloudWatch view rather than a notification channel.
 
 Deploying against a second registry in the same account and region needs a distinct stack ID first; see the note in [Build and deploy](#3-build-and-deploy).
 
@@ -195,7 +196,8 @@ uv run --frozen --with-requirements cdk/requirements.txt python -c "import aws_c
   --app "uv run --frozen --with-requirements requirements.txt python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
-  --context quiltStackName=<quilt-stack-name> \
+  --context registryUrl=<https://registry-host> \
+  --context registryApiKeySecret=<secret-name> \
   --context account=<aws-account-id> \
   --context region=<aws-region> \
   --context writeBack=true)
@@ -218,7 +220,7 @@ This creates:
 - an SNS findings topic; and
 - CloudWatch metrics and alarms.
 
-The checker may upload its response file under the governed prefix, but it cannot write Quilt manifests. It asks the Quilt Packager to create the response revision.
+The checker may upload its response file under the governed prefix, but it cannot write Quilt manifests. It asks the registry to patch that one file into the package.
 
 The CDK app currently uses the stack ID `check-commit`. To deploy more than one prefix in the same account and region, first give each deployment a distinct stack ID in `cdk/app.py`, such as `check-commit-myprefix`.
 
@@ -231,9 +233,17 @@ To check and alert without writing responses, deploy with:
   --app "uv run --frozen --with-requirements requirements.txt python app.py" --context writeBack=false ...)
 ```
 
-Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` and `sqs:SendMessage` grants and does not import the Packager queue exports, so it holds no write access to the governed registry and has no dependency it cannot use.
+Notify-only mode is useful for evaluation or troubleshooting, and it is the checked-in default. In this mode the stack drops the `s3:PutObject` grant and the read of the API key secret, so it holds no write access to the governed registry.
 
-Write-back files one immutable issue turn per checked revision and sends no package metadata, so the parent's `related_packages` and `status` carry forward already valid. One dependency is unverified: the Packager queue contract carries no workflow field, so a stamped write depends on the Packager honouring the registry's `default_workflow`. If it does not, the `workflow-stamp` check fails on the checker's own revision rather than passing silently: the checker publishes a `SELF-APPLICATION FAILED` message to the findings topic and increments `SelfApplicationFailures`. Confirm the findings topic has a subscriber before enabling write-back. Subscribing to the alarm is not the thing to check — the alarms are created without SNS actions, so notification runs through the topic, and the alarm is the aggregated CloudWatch signal.
+### Write-back
+
+Write-back files one immutable issue turn per checked revision with the registry's synchronous `packagePatch` ([quilt-specs#39](https://github.com/quiltdata/quilt-specs/pull/39)). The response revision is the checked revision plus that one turn, whatever else sits under the package's prefix; its package metadata carries forward unchanged.
+
+- If another revision became latest first, the registry returns `ParentNotLatest` and nothing is filed; the newer revision gets its own check, as for a stale event.
+- Any other failure publishes `write-back FAILED` to the findings topic, increments `EngineErrors`, and returns the event to the queue, where a redelivery tries again. After three receives the event is dead-lettered.
+- If the response revision fails its own checks, such as an unstamped workflow, the checker publishes `SELF-APPLICATION FAILED` and increments `SelfApplicationFailures`.
+
+Before enabling write-back, put the API key in the secret, run `PYTHONPATH=src python3 scripts/patch-roundtrip.py` against a scratch package, and confirm the findings topic has a subscriber. Subscribing to the alarm is not the thing to check — the alarms are created without SNS actions, so notification runs through the topic, and the alarm is the aggregated CloudWatch signal.
 
 ## 4. Subscribe to findings
 
@@ -265,11 +275,11 @@ aws logs tail /aws/lambda/<CheckerFunctionName> --follow --region <aws-region>
 Each event produces a JSON outcome with one of these actions:
 
 - `checked`: a governed revision was checked;
-- `self-applied`: the Packager-created checker response was verified;
+- `self-applied`: the checker's own response revision was verified;
 - `skipped`: the event was malformed or outside the configured prefix; or
 - `error`: the checker could not complete the run.
 
-A clean revision is logged and needs no response. Findings are published to SNS and, with write-back enabled, rendered as an issue turn and appended through the Quilt Packager. The checker recognizes its own revisions by the shape of the write — one added turn carrying its own contributor label and slug — because `spec:protocol/occurrence.md` §3 keeps revision attribution out of package metadata. It verifies that revision and files nothing in response, so there is no response loop.
+A clean revision is logged and needs no response. Findings are published to SNS and, with write-back enabled, rendered as an issue turn and patched into the package. The checker recognizes its own revisions by the shape of the write — one added turn carrying its own contributor label and slug — because `spec:protocol/occurrence.md` §3 keeps revision attribution out of package metadata. It verifies that revision and files nothing in response, so there is no response loop.
 
 Monitor the `CheckCommit` CloudWatch namespace and these alarms:
 
@@ -369,7 +379,8 @@ bash scripts/build-lambda.sh
   --app "uv run --frozen --with-requirements requirements.txt python app.py" \
   --context packagePrefix=myprefix \
   --context registryBuckets=<bucket1>,<bucket2> \
-  --context quiltStackName=<quilt-stack-name> \
+  --context registryUrl=<https://registry-host> \
+  --context registryApiKeySecret=<secret-name> \
   --context region=<aws-region> \
   --context writeBack=true)
 ```
@@ -399,7 +410,7 @@ uv run --frozen --extra dev --with-requirements cdk/requirements.txt \
   pytest tests/test_cdk_stack.py -q
 ```
 
-They assert relations rather than snapshot the template: that the queue's visibility timeout is not below the function timeout (which Lambda rejects at deploy, not at synth), that it follows the 6x retry ratio, and that notify-only grants no write access and imports no Packager queue. CI runs them in a separate `cdk` job alongside `cdk synth`, neither of which needs AWS credentials.
+They assert relations rather than snapshot the template: that the queue's visibility timeout is not below the function timeout (which Lambda rejects at deploy, not at synth), that it follows the 6x retry ratio, that notify-only grants no write access, and that neither mode depends on the Packager queue. CI runs them in a separate `cdk` job alongside `cdk synth`, neither of which needs AWS credentials.
 
 The design and operational background are maintained in the auto-checker project package, especially `05-auto-checker-stack.md` and `06-auto-checking-a-prefix.md`.
 

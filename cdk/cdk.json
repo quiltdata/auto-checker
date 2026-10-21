@@ -3,7 +3,8 @@
   "context": {
     "account": "867344438354",
     "region": "us-east-1",
-    "quiltStackName": "open-quilt-bio",
+    "registryUrl": "https://app-registry.quilt.bio",
+    "registryApiKeySecret": "check-commit/registry-api-key",
     "packagePrefix": "occurrence",
     "registryBuckets": "protology",
     "writeBack": "false"
