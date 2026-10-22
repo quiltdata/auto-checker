@@ -1,28 +1,47 @@
 """Lambda adapter routing tests — hermetic, all AWS clients faked."""
 
+import io
 import json
 
 import pytest
 
 import check_commit.lambda_handler as lh
 from check_commit.model import Entry
+from check_commit.registry import Registry
 
 from conftest import BUCKET, META, PACKAGE, STAMP, rev
 
 
 class FakeClient:
-    def __init__(self, existing_keys=()):
+    def __init__(self):
         self.calls = []
-        self.existing_keys = set(existing_keys)
 
     def __getattr__(self, name):
         def record(**kwargs):
             self.calls.append((name, kwargs))
-            if name == "head_object" and kwargs.get("Key") not in self.existing_keys:
-                raise KeyError("404")  # stands in for botocore ClientError
-            return {}
+            return {"VersionId": "v-staged"} if name == "put_object" else {}
 
         return record
+
+
+class FakeRegistryHTTP:
+    """The registry's GraphQL endpoint: records each request, answers `result`
+    as packagePatch's result, or as the whole response if it has no __typename."""
+
+    def __init__(self, result):
+        self.result = result
+        self.requests = []
+
+    def __call__(self, request, timeout=None):
+        self.requests.append(request)
+        body = self.result if "__typename" not in self.result else {"data": {"packagePatch": self.result}}
+        return io.BytesIO(json.dumps(body).encode())
+
+    def variables(self):
+        return [json.loads(r.data)["variables"] for r in self.requests]
+
+
+PATCHED = {"__typename": "PackagePushSuccess", "revision": {"hash": "d" * 64}}
 
 
 class FakeHistory:
@@ -49,7 +68,6 @@ class FakeHistory:
 ENV = {
     "PACKAGE_PREFIX": "occurrence",
     "SNS_TOPIC_ARN": "arn:aws:sns:us-east-1:1:t",
-    "PACKAGER_QUEUE_URL": "https://sqs/q",
     "WRITE_BACK": "true",
 }
 
@@ -62,11 +80,19 @@ BASE = {
 RESPONSE = f"{FOLDER}/007.03-Checker-t0-check-of-{'b' * 8}.md"
 
 
-def _handler(monkeypatch, pairs, views):
+def _handler(monkeypatch, pairs, views, result=PATCHED):
     monkeypatch.setattr(lh, "PackageHistory", lambda *a, **k: FakeHistory(pairs, views))
-    return lh.Handler(
-        env=ENV, s3=FakeClient(), sns=FakeClient(), sqs=FakeClient(), cloudwatch=FakeClient()
+    http = FakeRegistryHTTP(result)
+    monkeypatch.setattr("urllib.request.urlopen", http)
+    h = lh.Handler(
+        env=ENV,
+        s3=FakeClient(),
+        sns=FakeClient(),
+        cloudwatch=FakeClient(),
+        registry=Registry("https://registry.example", "qk_test"),
     )
+    h.http = http
+    return h
 
 
 @pytest.fixture
@@ -98,7 +124,7 @@ def test_outside_prefix_skipped(wired):
     h, _ = wired
     out = h.handle_detail({"bucket": BUCKET, "handle": "other/pkg", "topHash": "x" * 64})
     assert out.action == "skipped"
-    assert not h.s3.calls and not h.sqs.calls
+    assert not h.s3.calls and not h.http.requests
 
 
 def test_clean_revision_notify_nothing_write_nothing(wired):
@@ -107,7 +133,7 @@ def test_clean_revision_notify_nothing_write_nothing(wired):
     assert out.action == "checked"
     assert out.report.verdict == "pass"
     assert out.report.regime == "current"
-    assert not h.s3.calls and not h.sqs.calls and not h.sns.calls
+    assert not h.s3.calls and not h.http.requests and not h.sns.calls
 
 
 def test_defect_writes_a_turn_and_no_package_metadata(wired):
@@ -123,17 +149,39 @@ def test_defect_writes_a_turn_and_no_package_metadata(wired):
     assert puts[0][1]["Key"] == f"{PACKAGE}/{RESPONSE}"
     assert puts[0][1]["Body"].startswith(b"# T0 check of revision bbbbbbbb")
 
-    sends = [c for c in h.sqs.calls if c[0] == "send_message"]
-    assert len(sends) == 1
-    body = json.loads(sends[0][1]["MessageBody"])
-    assert body["package_name"] == PACKAGE
-    # quilt-specs#39: absent metadata preserves the parent's, which is already
-    # valid. Sending any of the old fields would now fail schema validation.
-    assert "metadata" not in body
-    assert set(body) == {"source_prefix", "package_name", "commit_message"}
-    # §3 puts rationale and the entry-count claim in the commit message
-    assert RESPONSE in body["commit_message"]
-    assert "expected entry-count delta +1" in body["commit_message"]
+    [sent] = h.http.variables()
+    # Absent userMeta preserves the parent's metadata, which is already valid;
+    # any field we might send is forbidden by the registered schema.
+    # §3 puts rationale and the entry-count claim in the commit message, whose
+    # author prefix is how the checker later recognizes its own revision.
+    assert sent["params"] == {
+        "bucket": BUCKET,
+        "name": PACKAGE,
+        "message": f"commit-protocol: T0 check of {'b' * 12} — 1 finding(s) filed at "
+        f"{RESPONSE}; expected entry-count delta +1",
+        "workflow": "occurrence",
+    }
+    assert out.detail == f"filed {RESPONSE} in {PACKAGE}@{'d' * 12}"
+
+
+def test_write_back_patches_only_the_response_onto_the_checked_revision(wired):
+    """quilt-specs#39: the patch names the response and nothing else under the
+    prefix, pinned to the revision the turn number was allocated against."""
+    h, views = wired
+    make_defective(views)
+    h.handle_detail(detail("b" * 64))
+
+    [sent] = h.http.variables()
+    assert sent["src"] == {
+        "parent": "b" * 64,
+        "set": [
+            {
+                "logicalKey": RESPONSE,
+                "physicalKey": f"s3://{BUCKET}/{PACKAGE}/{RESPONSE}?versionId=v-staged",
+            }
+        ],
+    }
+    assert h.http.requests[0].get_header("Authorization") == "Bearer qk_test"
 
 
 def test_notify_only_mode_never_writes(wired):
@@ -143,7 +191,7 @@ def test_notify_only_mode_never_writes(wired):
     out = h.handle_detail(detail("b" * 64))
     assert out.action == "checked"
     assert "notify-only" in out.detail
-    assert not h.s3.calls and not h.sqs.calls
+    assert not h.s3.calls and not h.http.requests
 
 
 def test_stale_event_for_superseded_revision_never_writes(monkeypatch):
@@ -171,19 +219,77 @@ def test_stale_event_for_superseded_revision_never_writes(monkeypatch):
     assert out.action == "checked"
     assert "stale event" in out.detail
     assert any(c[0] == "publish" for c in h.sns.calls)  # still notified
-    assert not h.s3.calls and not h.sqs.calls  # never writes
+    assert not h.s3.calls and not h.http.requests  # never writes
 
 
-def test_idempotent_skip_when_response_staged_in_s3(wired):
-    """Redelivery before the Packager has cut the response revision: the turn
-    already sits in S3, so nothing is re-put or re-requested."""
+def test_head_moving_before_the_patch_lands_files_nothing_and_raises_nothing(wired):
+    """ParentNotLatest naming another latest: another writer won. Its revision
+    gets its own check; retrying ours would only fail the same way."""
     h, views = wired
     make_defective(views)
-    h.s3 = FakeClient(existing_keys={f"{PACKAGE}/{RESPONSE}"})
+    h.http.result = {
+        "__typename": "OperationError",
+        "name": "ParentNotLatest",
+        "message": "parent is not latest",
+        "context": {"parent": "b" * 64, "latest": "c" * 64},
+    }
     out = h.handle_detail(detail("b" * 64))
-    assert out.action == "skipped"
-    assert "already staged" in out.detail
-    assert not [c for c in h.s3.calls if c[0] == "put_object"] and not h.sqs.calls
+    assert out.action == "checked"
+    assert f"head moved to {'c' * 12}" in out.detail
+    assert not any("FAILED" in c[1]["Subject"] for c in h.sns.calls)
+    assert not any(c[1]["MetricData"][0]["MetricName"] == "EngineErrors" for c in h.cloudwatch.calls)
+
+
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        {
+            "__typename": "InvalidInput",
+            "errors": [{"path": "params", "name": "WorkflowValidationError", "message": "no"}],
+        },
+        {"__typename": "OperationError", "name": "InsufficientPermissions", "message": "no", "context": None},
+        # a stack whose registry predates the patch API
+        {"errors": [{"message": "Cannot query field 'packagePatch' on type 'Mutation'."}]},
+        # lost only write contention: latest still names the checked revision
+        {
+            "__typename": "OperationError",
+            "name": "ParentNotLatest",
+            "message": "parent is not latest",
+            "context": {"parent": "b" * 64, "latest": "b" * 64},
+        },
+        # names no latest at all, so no newer revision will be checked
+        {"__typename": "OperationError", "name": "ParentNotLatest", "message": "parent is not latest", "context": None},
+    ],
+)
+def test_failed_patch_alerts_and_a_redelivery_files_the_response(wired, rejection):
+    """The event goes back to the queue, and the redelivery patches again
+    rather than skipping the object the failed run staged."""
+    h, views = wired
+    make_defective(views)
+    record = {"messageId": "m1", "body": json.dumps({"detail": detail("b" * 64)})}
+
+    h.http.result = rejection
+    assert h.handle_sqs({"Records": [record]})["batchItemFailures"] == [{"itemIdentifier": "m1"}]
+    assert any(c[1]["Subject"].startswith("[check-commit] write-back FAILED") for c in h.sns.calls)
+    assert any(c[1]["MetricData"][0]["MetricName"] == "EngineErrors" for c in h.cloudwatch.calls)
+
+    h.http.result = PATCHED
+    assert h.handle_sqs({"Records": [record]})["batchItemFailures"] == []
+    assert len(h.http.requests) == 2
+
+
+def test_failed_staging_alerts_like_a_failed_patch(wired):
+    h, views = wired
+    make_defective(views)
+
+    def denied(**kwargs):
+        raise PermissionError("AccessDenied")
+
+    h.s3.put_object = denied
+    with pytest.raises(PermissionError):
+        h.handle_detail(detail("b" * 64))
+    assert any(c[1]["Subject"].startswith("[check-commit] write-back FAILED") for c in h.sns.calls)
+    assert not h.http.requests
 
 
 def test_idempotent_skip_when_response_already_filed(wired):
@@ -192,11 +298,11 @@ def test_idempotent_skip_when_response_already_filed(wired):
     views["b" * 64].entries[RESPONSE] = Entry(size=1, hash="hf", physical_key=None)
     out = h.handle_detail(detail("b" * 64))
     assert out.action == "skipped"
-    assert not h.s3.calls and not h.sqs.calls
+    assert not h.s3.calls and not h.http.requests
 
 
 def _own_revision(views, workflow=STAMP):
-    """Our own turn coming back from the Packager."""
+    """Our own patched turn coming back as a revision event."""
     cur = views["b" * 64]
     cur.entries = dict(views["a" * 64].entries)
     cur.entries[RESPONSE] = Entry(
@@ -218,20 +324,19 @@ def test_own_revision_routes_to_self_application(wired):
     out = h.handle_detail(detail("b" * 64))
     assert out.action == "self-applied"
     assert out.report.verdict == "pass"
-    assert not h.s3.calls and not h.sqs.calls
+    assert not h.s3.calls and not h.http.requests
 
 
 def test_own_unstamped_revision_alerts(wired):
-    """The Packager gap, if there is one: the queue contract carries no
-    workflow field, so an unstamped write shows up here as a self-application
-    failure rather than passing silently."""
+    """A response revision the registry did not stamp shows up here as a
+    self-application failure rather than passing silently."""
     h, views = wired
     _own_revision(views, workflow=None)
     out = h.handle_detail(detail("b" * 64))
     assert out.action == "error"
     assert "self-application failed" in out.detail
     assert any("workflow-stamp" in str(c) for c in h.sns.calls)
-    assert not h.s3.calls and not h.sqs.calls
+    assert not h.s3.calls and not h.http.requests
 
 
 def test_a_foreign_turn_is_not_mistaken_for_ours(wired):
@@ -247,7 +352,7 @@ def test_a_foreign_turn_is_not_mistaken_for_ours(wired):
 
 def test_our_turn_shape_alone_is_not_enough(wired):
     """§5 makes the contributor label navigational, so the turn name is only
-    one signal. Without the commit message we ask the Packager for, the
+    one signal. Without the commit message our patch carries, the
     revision is checked like anyone else's."""
     h, views = wired
     _own_revision(views)

@@ -6,11 +6,12 @@ to self-application, run the checks on everything else, and act on the
 verdict — notify always, write back only when enabled and safe.
 
 Environment:
-  PACKAGE_PREFIX      e.g. "occurrence" (selects policy; sanity-checks events)
-  SNS_TOPIC_ARN       findings/alerts topic
-  PACKAGER_QUEUE_URL  the Quilt stack's Packager queue (write-back)
-  WRITE_BACK          "true" to write response turns; anything else = notify-only
-  METRIC_NAMESPACE    default "CheckCommit"
+  PACKAGE_PREFIX           e.g. "occurrence" (selects policy; sanity-checks events)
+  SNS_TOPIC_ARN            findings/alerts topic
+  REGISTRY_URL             the Quilt registry that applies the patch (write-back)
+  REGISTRY_API_KEY_SECRET  Secrets Manager secret holding its API key (write-back)
+  WRITE_BACK               "true" to write response turns; anything else = notify-only
+  METRIC_NAMESPACE         default "CheckCommit"
 
 Notify-only is the safe default.
 """
@@ -29,6 +30,7 @@ from .corpus import PackageHistory
 from .engine import Context, run
 from .model import DEFECT, Report
 from .policy import Policy
+from .registry import ParentNotLatest, Registry
 
 
 @dataclasses.dataclass
@@ -41,20 +43,25 @@ class Outcome:
 
 
 class Handler:
-    def __init__(self, env=None, s3=None, sns=None, sqs=None, cloudwatch=None):
+    def __init__(self, env=None, s3=None, sns=None, cloudwatch=None, registry=None):
         e = env or os.environ
         self.prefix = e["PACKAGE_PREFIX"]
         self.topic_arn = e.get("SNS_TOPIC_ARN", "")
-        self.packager_queue_url = e.get("PACKAGER_QUEUE_URL", "")
+        self.registry_url = e.get("REGISTRY_URL", "")
+        self.api_key_secret = e.get("REGISTRY_API_KEY_SECRET", "")
         self.write_back = e.get("WRITE_BACK", "").lower() == "true"
         self.namespace = e.get("METRIC_NAMESPACE", "CheckCommit")
         import boto3
 
         self.s3 = s3 or boto3.client("s3")
         self.sns = sns or boto3.client("sns")
-        self.sqs = sqs or boto3.client("sqs")
         self.cloudwatch = cloudwatch or boto3.client("cloudwatch")
+        self._registry = registry
         self.policy = Policy.for_package(f"{self.prefix}/_")
+
+    def registry(self) -> Registry:
+        # Read per write, not cached, so a rotated key takes effect at once.
+        return self._registry or Registry.from_secret(self.registry_url, self.api_key_secret)
 
     # -- event plumbing -----------------------------------------------------
 
@@ -98,7 +105,7 @@ class Handler:
         it and the registered schema rejects it — so the signal is the write
         itself: exactly one added entry, nothing removed or changed (that is
         all we ever write), the entry is one of our turns, and the commit
-        message is the one we ask the Packager for.
+        message is the one our patch carries.
 
         Both remaining signals are things any package writer could imitate;
         §5 leaves the contributor label navigational on purpose. Misrouting
@@ -166,44 +173,52 @@ class Handler:
             self._notify(f"[check-commit] compose failed for {handle}", str(exc))
             return self._log(Outcome("error", f"compose: {exc}", report))
 
+        # A redelivery stages and patches again: the registry does not retry.
+        from quilt3.util import PhysicalKey
+
         key = f"{handle}/{turn.logical_key}"
         try:
-            self.s3.head_object(Bucket=bucket, Key=key)
-            # staged by an earlier delivery of this event; packaging already requested
-            return self._log(Outcome("skipped", f"response already staged at {key}", report))
-        except Exception:
-            pass
-        self.s3.put_object(Bucket=bucket, Key=key, Body=turn.text.encode())
-        self.sqs.send_message(
-            QueueUrl=self.packager_queue_url,
-            MessageBody=json.dumps(
-                {
-                    "source_prefix": f"s3://{bucket}/{handle}/",
-                    "package_name": handle,
-                    # Rationale belongs in the commit message (§3), and the only
-                    # entry-count claim we can make is +1: one new turn.
-                    "commit_message": f"{self.policy.author}: T0 check of "
-                    f"{report.tophash[:12]} — {len(report.findings)} finding(s) filed at "
-                    f"{turn.logical_key}; expected entry-count delta +1",
-                    # No `metadata` key. Absent package metadata preserves the
-                    # parent's, so its related_packages/status carry forward
-                    # already-valid; present metadata would replace it wholesale
-                    # and every field we used to send is now forbidden by the
-                    # registered schema's additionalProperties: false.
-                }
-            ),
-        )
+            put = self.s3.put_object(Bucket=bucket, Key=key, Body=turn.text.encode())
+            new_hash = self.registry().patch(
+                bucket=bucket,
+                name=handle,
+                # Pinned: the turn number was allocated against this revision.
+                parent=cur.tophash,
+                entries={turn.logical_key: str(PhysicalKey(bucket, key, put.get("VersionId")))},
+                # Rationale belongs in the commit message (§3), and the only
+                # entry-count claim we can make is +1: one new turn.
+                message=f"{self.policy.author}: T0 check of "
+                f"{report.tophash[:12]} — {len(report.findings)} finding(s) filed at "
+                f"{turn.logical_key}; expected entry-count delta +1",
+                workflow=self.policy.workflow,
+            )
+        except ParentNotLatest as exc:
+            # Same as a stale event: the new head gets its own check.
+            return self._log(
+                Outcome(
+                    "checked",
+                    f"{handle}@{cur.tophash}: {len(report.findings)} finding(s), stale event "
+                    f"(head moved to {exc.latest[:12]} before the patch), notify-only",
+                    report,
+                )
+            )
+        except Exception as exc:
+            self._notify(
+                f"[check-commit] write-back FAILED for {handle}@{cur.tophash[:12]}",
+                f"{turn.logical_key} was not confirmed filed: {exc}\n\n"
+                "The event is returned to the queue; after three receives it is dead-lettered.",
+            )
+            self._metric("EngineErrors", 1)
+            raise
         self._metric("ResponsesWritten", 1)
-        return self._log(Outcome("checked", f"wrote {key} and requested packaging", report))
+        return self._log(Outcome("checked", f"filed {turn.logical_key} in {handle}@{new_hash[:12]}", report))
 
     def _self_apply(self, history, pairs, prev, cur, handle) -> Outcome:
-        """Our own Packager-cut revision came back: verify, never write.
+        """Our own patched revision came back: verify, never write.
 
-        This is also how the open question about the Packager gets answered.
-        The queue contract carries no workflow field, so whether our write is
-        stamped `workflow: occurrence` depends on the Packager honouring the
-        bucket's `default_workflow`. If it does not, the `workflow-stamp` check
-        fails here, on our own revision, and raises SelfApplicationFailures.
+        The patch names the policy's workflow, and the `workflow-stamp` check
+        confirms the registry stamped it; a failure here raises
+        SelfApplicationFailures.
         """
         added, removed, changed = cur.diff(prev)
         ctx = Context(history, pairs, online=False, policy=self.policy)

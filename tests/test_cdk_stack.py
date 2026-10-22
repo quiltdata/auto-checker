@@ -6,7 +6,7 @@ unit suite or a plain `cdk synth` can see:
   - A queue visibility timeout below the function timeout. Synth emits a valid
     template and Lambda rejects the event source mapping at deploy, so the only
     cheap place to catch it is here, against the synthesized template.
-  - Write-path grants and the Packager queue import leaking into a notify-only
+  - Write-path grants and the registry API key leaking into a notify-only
     deployment, where the Lambda has no use for either.
 
 Assertions are on relations and on the presence or absence of grants, not on a
@@ -143,7 +143,8 @@ def test_cdk_json_targets_the_open_account_notify_only():
     assert checked_in_context() == {
         "account": "867344438354",
         "region": "us-east-1",
-        "quiltStackName": "open-quilt-bio",
+        "registryUrl": "https://app-registry.quilt.bio",
+        "registryApiKeySecret": "check-commit/registry-api-key",
         "packagePrefix": "occurrence",
         "registryBuckets": "protology",
         "writeBack": "false",
@@ -241,44 +242,52 @@ def test_notify_only_is_the_default():
 
 
 def test_notify_only_grants_no_write_access():
-    """No PutObject on the governed prefix, no SendMessage to the Packager.
+    """No PutObject on the governed prefix and no registry API key.
 
     The Lambda cannot use either with write-back off, and this registry
     validates every write.
     """
     actions = policy_actions(synth())
     assert "s3:PutObject" not in actions
-    # sqs:SendMessage appears in the EventBridge -> queue policy, which is a
-    # resource policy rather than a grant to the checker; the role must not have
-    # it. find_resources("AWS::IAM::Policy") only covers role policies.
-    assert "sqs:SendMessage" not in actions
+    assert "secretsmanager:GetSecretValue" not in actions
 
 
-def test_notify_only_does_not_import_the_packager_queue():
-    """A missing export is a deploy-time failure, so importing it unconditionally
-    would break a notify-only deployment against a Quilt stack that has none."""
-    body = json.dumps(synth().to_json())
-    assert "Fn::ImportValue" not in body
-
-
-def test_notify_only_leaves_the_packager_queue_url_empty():
+def test_notify_only_carries_no_registry_api_key():
     env = checker(synth())["Properties"]["Environment"]["Variables"]
-    assert env["PACKAGER_QUEUE_URL"] == ""
+    assert env["REGISTRY_API_KEY_SECRET"] == ""
 
 
 # -- write-back wires the write path back up -------------------------------
 
 
-def test_write_back_imports_both_packager_exports():
-    body = json.dumps(synth(writeBack="true", quiltStackName="some-quilt").to_json())
-    assert "some-quilt-PackagerQueueArn" in body
-    assert "some-quilt-PackagerQueueUrl" in body
+@pytest.mark.parametrize("write_back", ["false", "true"])
+def test_no_mode_depends_on_the_packager_queue(write_back):
+    """Write-back patches through the registry, so the stack deploys against a
+    Quilt stack without the Packager queue exports and cannot send to it."""
+    template = synth(writeBack=write_back)
+    assert "Fn::ImportValue" not in json.dumps(template.to_json())
+    # sqs:SendMessage appears in the EventBridge -> queue policy, which is a
+    # resource policy rather than a grant to the checker; the role must not have
+    # it. find_resources("AWS::IAM::Policy") only covers role policies.
+    assert "sqs:SendMessage" not in policy_actions(template)
 
 
 def test_write_back_grants_the_write_path():
     actions = policy_actions(synth(writeBack="true"))
     assert "s3:PutObject" in actions
-    assert "sqs:SendMessage" in actions
+    assert "secretsmanager:GetSecretValue" in actions
+
+
+def test_write_back_reads_only_the_named_api_key_and_passes_the_registry():
+    template = synth(writeBack="true", registryApiKeySecret="ck/key", registryUrl="https://reg.example")
+    env = checker(template)["Properties"]["Environment"]["Variables"]
+    assert (env["REGISTRY_URL"], env["REGISTRY_API_KEY_SECRET"]) == ("https://reg.example", "ck/key")
+    for pol in template.find_resources("AWS::IAM::Policy").values():
+        for statement in pol["Properties"]["PolicyDocument"]["Statement"]:
+            if "secretsmanager:GetSecretValue" in as_list(statement.get("Action", [])):
+                assert ":secret:ck/key-??????" in json.dumps(statement["Resource"])
+                return
+    pytest.fail("no secretsmanager:GetSecretValue statement found with write-back enabled")
 
 
 # -- permissions stay scoped to the governed prefix (04 §7) ----------------

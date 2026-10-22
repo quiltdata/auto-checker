@@ -32,6 +32,12 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
+## [0.4.0] - 2026-10-21
+
+### Changed
+
+- Write-back files its response with a registry `packagePatch` pinned to the checked revision, so the response revision is that revision plus one turn instead of a snapshot of the package's whole prefix, and a failed write alerts and is retried rather than skipped as already staged. It now needs `registryUrl` and a registry API key in `registryApiKeySecret` in place of the Packager queue exports (`quiltStackName` is gone) ([#26](https://github.com/quiltdata/auto-checker/pull/26)).
+
 ## [0.3.7] - 2026-09-22
 
 `watchlist-size` reported the 056 refactor of `occurrence/spec`

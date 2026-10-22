@@ -4,14 +4,16 @@
 Inputs (CDK context, all defaulted in cdk.json):
   account          target AWS account (default 867344438354, the open account)
   region           target AWS region (default us-east-1)
-  quiltStackName   Quilt CFN stack exporting the Packager queue (default open-quilt-bio)
-  packagePrefix    governed package prefix (default occurrence)
-  registryBuckets  comma-separated registry buckets (default protology)
-  writeBack        "true" to enable issue-turn write-back (default false: notify-only)
+  registryUrl           registry that patches responses in (default https://app-registry.quilt.bio)
+  registryApiKeySecret  Secrets Manager secret holding its API key (default check-commit/registry-api-key)
+  packagePrefix         governed package prefix (default occurrence)
+  registryBuckets       comma-separated registry buckets (default protology)
+  writeBack             "true" to enable issue-turn write-back (default false: notify-only)
 
-The defaults target the governed corpus in s3://protology, served by the open
-catalog at https://open.quiltdata.com. The auto-checker stack must land in the
-same account and region as the Quilt stack whose Packager queue it uses.
+The defaults target the governed corpus in s3://protology, served by the
+catalog at https://app.quilt.bio (formerly open.quiltdata.com; Quilt stack
+open-quilt-bio). The auto-checker stack must land in the same account and
+region as the Quilt stack whose package-revision events it receives.
 
 `account` is pinned in cdk.json rather than left to the ambient credentials, so
 a bare `cdk deploy` cannot land in whichever account happens to be configured.
