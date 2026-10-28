@@ -4,6 +4,8 @@ Auto-checker continuously checks new Quilt package revisions against the policy 
 
 Use this repository to put a package prefix such as `occurrence/*` or `myprefix/*` under automatic policy checking.
 
+> **Not deployed.** The `check-commit` stack that checked `occurrence/*` in the open account was torn down on 2026-10-28; agent-exec obsoletes it. The deployment instructions below still describe how to stand one up.
+
 ## How it works
 
 Each deployment governs one package prefix:
@@ -47,7 +49,7 @@ A notify-only deployment needs neither the API key nor write access. With `write
 
 ### Deployment context: the `occurrence` corpus
 
-The governed corpus lives in `s3://protology`, served by the catalog at <https://app.quilt.bio> (formerly open.quiltdata.com) from the Quilt stack `open-quilt-bio`. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it:
+The governed corpus lives in `s3://protology`, served by the catalog at <https://app.quilt.bio> (formerly open.quiltdata.com) from the Quilt stack `open-quilt-bio`. These are the checked-in defaults in `cdk/cdk.json`, so `cdk deploy` with no `--context` flags targets it. The deployment that used them was deleted on 2026-10-28 (see the note at the top):
 
 | Context key | Value | Notes |
 | --- | --- | --- |
