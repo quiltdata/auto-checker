@@ -32,6 +32,19 @@ than repaired. They were four bumps inside one squash-merged pull request
 their own. A report stamped with one of them can be read against this file and
 against that pull request, but not located in `main`'s history.
 
+## [Unreleased]
+
+### Operational
+
+- The `check-commit` stack in `867344438354`/`us-east-1` was deleted on
+  2026-10-28; agent-exec obsoletes it. No auto-checker stack is deployed in any
+  account. It was the notify-only deployment against `s3://protology` and
+  `occurrence/`, last updated with 0.3.7 on 2026-09-22, so 0.4.0 never ran
+  there. Its Lambda log group,
+  `/aws/lambda/check-commit-Checker1D892424-X19vybHXkWM8`, was not owned by the
+  stack and is kept as the record of what the checker reported. The write-back
+  secret `check-commit/registry-api-key` was never created.
+
 ## [0.4.0] - 2026-10-21
 
 ### Changed
